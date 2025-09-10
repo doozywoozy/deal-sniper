@@ -1,7 +1,7 @@
 name: Deal Sniper Bot
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Run every 30 minutes
+    - cron: '0 */2 * * *'  # Run every 2 hours (to stay within free tier)
   workflow_dispatch:        # Allow manual runs
 
 jobs:
@@ -12,18 +12,18 @@ jobs:
     steps:
     # Step 1: Checkout code
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # Updated to v4
       
     # Step 2: Set up Python
     - name: Set up Python 3.9
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # Updated to v5
       with:
         python-version: '3.9'
         cache: 'pip'
         
     # Step 3: Cache dependencies for faster runs
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4  # Updated to v4
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
@@ -36,23 +36,28 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    # Step 5: Install Playwright and browser
+    # Step 5: Install system dependencies for Playwright
+    - name: Install Chrome dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2
+        
+    # Step 6: Install Playwright and browser
     - name: Install Playwright
       run: |
         pip install playwright
         playwright install chromium
-        playwright install-deps chromium  # Install system dependencies
         
-    # Step 6: Cache Ollama models between runs
+    # Step 7: Cache Ollama models between runs
     - name: Cache Ollama models
-      uses: actions/cache@v3
+      uses: actions/cache@v4  # Updated to v4
       with:
         path: ~/.ollama
         key: ${{ runner.os }}-ollama-models
         restore-keys: |
           ${{ runner.os }}-ollama-
           
-    # Step 7: Install Ollama and AI model
+    # Step 8: Install Ollama and AI model
     - name: Install Ollama and AI model
       run: |
         curl -fsSL https://ollama.ai/install.sh | sh
@@ -63,7 +68,7 @@ jobs:
         # Verify model is working
         ollama list
         
-    # Step 8: Initialize database
+    # Step 9: Initialize database
     - name: Initialize database
       run: |
         python -c "
@@ -71,7 +76,7 @@ jobs:
         print('Database initialized successfully')
         "
         
-    # Step 9: Run the deal sniper
+    # Step 10: Run the deal sniper
     - name: Run Deal Sniper Bot
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -80,10 +85,10 @@ jobs:
         python main.py
         echo "✅ Bot run completed!"
         
-    # Step 10: Upload database as artifact (optional)
+    # Step 11: Upload database as artifact (OPTIONAL - updated to v4)
     - name: Upload database artifact
       if: always()  # Run even if previous steps fail
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # Updated to v4
       with:
         name: listings-database
         path: listings.db
