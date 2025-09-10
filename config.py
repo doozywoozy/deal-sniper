@@ -8,15 +8,15 @@ SEARCH_QUERIES = [
         "sites": ["blocket"],
         "query": "rtx 3080",
         "max_price": 8000,
-        "max_pages": 2,
+        "max_pages": 3,
         "condition": "used"
     },
     {
         "name": "All Stationary Computers", 
         "sites": ["blocket"],
         "query": "",
-        "max_price": 15000,
-        "max_pages": 1,
+        "max_price": 20000,
+        "max_pages": 5,
         "condition": "used"
     },
     {
@@ -43,3 +43,4 @@ DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL', 'https://discord.com
 
 # Database
 DATABASE_PATH = "listings.db"
+
