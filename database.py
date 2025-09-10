@@ -1,56 +1,69 @@
 # database.py
-import sqlite_utils
+import sqlite3
+from config import DATABASE_PATH
 
-# Database configuration
-DATABASE_PATH = "listings.db"
-
-# Initialize database
-db = sqlite_utils.Database(DATABASE_PATH)
-
-def init_db():
-    """Initialize the database with required tables."""
-    # Table for seen listings to avoid duplicates
-    if "seen_listings" not in db.table_names():
-        db["seen_listings"].create({
-            "id": str,
-            "site": str,
-            "title": str,
-            "price": float,
-            "url": str,
-            "created": str,
-        }, pk="id")
-        print("✅ Database table 'seen_listings' created")
-    else:
-        print("✅ Database table 'seen_listings' already exists")
+def init_database():
+    """Initialize the database with required tables"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
     
-    # Table for historical sales data
-    if "historical_sales" not in db.table_names():
-        db["historical_sales"].create({
-            "id": str,
-            "site": str,
-            "title": str,
-            "price": float,
-            "url": str,
-            "date_sold": str,
-            "specs": str
-        }, pk="id")
-        print("✅ Database table 'historical_sales' created")
+    # Create table for seen listings
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS seen_listings (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        price INTEGER,
+        url TEXT,
+        source TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print("✅ Database table 'seen_listings' ready")
 
-def is_listing_seen(listing_id):
-    """Check if a listing ID exists in the database without raising errors."""
-    try:
-        return db["seen_listings"].get(listing_id) is not None
-    except:
-        return False
+def is_listing_seen(listing_id: str) -> bool:
+    """Check if a listing has already been processed"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM seen_listings WHERE id = ?", (listing_id,))
+    result = cursor.fetchone()
+    
+    conn.close()
+    return result is not None
 
-def add_listing(listing_data):
-    """Add a listing to the seen_listings database."""
+def mark_listing_seen(listing_id: str, title: str = "", price: int = 0, url: str = "", source: str = "blocket"):
+    """Mark a listing as seen/processed"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
     try:
-        db["seen_listings"].insert(listing_data)
-        return True
+        cursor.execute('''
+        INSERT OR IGNORE INTO seen_listings (id, title, price, url, source)
+        VALUES (?, ?, ?, ?, ?)
+        ''', (listing_id, title, price, url, source))
+        
+        conn.commit()
     except Exception as e:
-        print(f"❌ Error adding listing to database: {e}")
-        return False
+        print(f"Error marking listing as seen: {e}")
+    finally:
+        conn.close()
 
-# Initialize the database when this module is imported
-init_db()
+def cleanup_old_listings(days: int = 30):
+    """Remove old listings from the database"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("DELETE FROM seen_listings WHERE created_at < datetime('now', ?)", (f'-{days} days',))
+    deleted_count = cursor.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"🧹 Cleaned up {deleted_count} old listings")
+    return deleted_count
+
+# Initialize database when module is imported
+init_database()
