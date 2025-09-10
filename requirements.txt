@@ -4,3 +4,4 @@ requests==2.31.0
 sqlite-utils==3.35.1
 aiohttp==3.9.1
 aiofiles==23.2.1
+discord-webhook==1.2.1
