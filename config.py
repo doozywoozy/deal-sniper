@@ -34,9 +34,10 @@ OLLAMA_MODEL = "mistral"  # Or "mistral", "codellama", etc. Use a model good at 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 # DISCORD CONFIGURATION
-DISCORD_BOT_TOKEN = "MTQxNTAzNDU0ODg3Nzc4NzEzNg.GzsCng.yGPmN18xP-oDtkmo9_wTxQKAQmvZU3Tja1Mcss"
+DISCORD_BOT_TOKEN = "MTQxNTAzNDU0ODg3Nzc4NzEzNg.G64bnP.lNwtH4hz4Uouq8HUxmtC0Sp7uWNFcOfMKNbq9M"
 DISCORD_CHANNEL_ID = 1055040464316809266 # Your Discord Channel ID
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1415061850240061618/mMqXX1NORtqhl_3WeLhhcj52i2M46vSOd0tO2Y9s0xkkSRMQVVQK-LfuL58TeoIv5f_n"
 
 # DATABASE CONFIG
+
 DATABASE_PATH = "listings.db"
