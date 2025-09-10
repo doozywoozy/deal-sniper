@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from typing import List, Dict
-import discord
+from discord_webhook import DiscordWebhook, DiscordEmbed
 import scraper
 import database
 from config import DISCORD_WEBHOOK_URL
@@ -18,27 +18,29 @@ async def send_discord_message(listing: Dict, search_name: str):
         return
     
     try:
-        webhook = discord.SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
+        # Create webhook
+        webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
         
         # Create embed
-        embed = discord.Embed(
+        embed = DiscordEmbed(
             title=listing['title'][:256],
             url=listing['url'],
-            color=0x00ff00 if listing['price'] < 5000 else 0xff9900
+            color="00ff00" if listing['price'] < 5000 else "ff9900"
         )
         
-        embed.add_field(name="Price", value=f"{listing['price']} SEK", inline=True)
+        embed.add_embed_field(name="Price", value=f"{listing['price']} SEK", inline=True)
         if listing.get('location'):
-            embed.add_field(name="Location", value=listing['location'], inline=True)
-        embed.add_field(name="Source", value=listing['source'], inline=True)
-        embed.add_field(name="Search", value=search_name, inline=False)
+            embed.add_embed_field(name="Location", value=listing['location'], inline=True)
+        embed.add_embed_field(name="Source", value=listing['source'], inline=True)
+        embed.add_embed_field(name="Search", value=search_name, inline=False)
         
         if listing.get('image'):
-            embed.set_thumbnail(url=listing['image'])
+            embed.set_image(url=listing['image'])
         
         embed.set_footer(text="Deal Sniper Bot 🤖")
         
-        webhook.send(embed=embed)
+        webhook.add_embed(embed)
+        webhook.execute()
         print(f"✅ Sent to Discord: {listing['title']}")
         
     except Exception as e:
@@ -50,8 +52,8 @@ async def send_startup_message():
         return
     
     try:
-        webhook = discord.SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
-        webhook.send("🚀 Deal Sniper Bot started scanning...")
+        webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content="🚀 Deal Sniper Bot started scanning...")
+        webhook.execute()
         print("✅ Startup message sent via webhook!")
     except Exception as e:
         print(f"❌ Failed to send startup message: {e}")
@@ -62,14 +64,13 @@ async def send_summary_message(total_listings: int, new_listings: int):
         return
     
     try:
-        webhook = discord.SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
-        
         if new_listings > 0:
             message = f"✅ Scan completed! Found {new_listings} new deals out of {total_listings} listings."
         else:
             message = f"ℹ️ Scan completed. Checked {total_listings} listings but no new deals found."
         
-        webhook.send(message)
+        webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=message)
+        webhook.execute()
         print("✅ Summary message sent via webhook!")
     except Exception as e:
         print(f"❌ Failed to send summary message: {e}")
