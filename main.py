@@ -74,6 +74,19 @@ async def send_summary_message(total_listings: int, new_listings: int):
     except Exception as e:
         print(f"❌ Failed to send summary message: {e}")
 
+def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
+    """Determine which search found this listing"""
+    title_lower = listing['title'].lower()
+    
+    for search in searches:
+        search_name_lower = search['name'].lower()
+        # Check if any word from the search name is in the listing title
+        search_words = search_name_lower.split()
+        if any(word in title_lower for word in search_words):
+            return search['name']
+    
+    return "Unknown Search"
+
 async def main():
     """Main function to run the deal sniper bot"""
     print("🚀 Starting scraping process...")
@@ -119,7 +132,7 @@ async def main():
         
         # Send each listing to Discord
         for listing in all_new_listings:
-            search_name = next((s['name'] for s in searches if any(kw in listing['title'].lower() for kw in s['name'].lower().split()), "Unknown Search")
+            search_name = get_search_name_for_listing(listing, searches)
             await send_discord_message(listing, search_name)
             
             # Add small delay to avoid rate limiting
