@@ -33,114 +33,58 @@ async def send_discord_message(listing: Dict, search_name: str):
         }
         
         if listing.get('location'):
-            # Corrected line below - changed 'inline': True to "inline": True
             embed["fields"].insert(1, {"name": "Location", "value": listing['location'], "inline": True})
         
         if listing.get('image'):
-            embed["thumbnail"] = {"url": listing['image']}
-        
-        data = {"embeds": [embed], "username": "Deal Sniper Bot"}
-        headers = {'Content-Type': 'application/json'}
-        
-        response = requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(data), headers=headers, timeout=10)
-        
-        if response.status_code == 204:
-            logger.info(f"✅ Sent to Discord: {listing['title']}")
-        else:
-            logger.error(f"❌ Failed to send to Discord: {response.status_code}")
+            embed["image"] = {"url": listing['image']}
             
-    except Exception as e:
-        logger.error(f"❌ Failed to send Discord message: {e}")
-
-async def send_startup_message():
-    """Send startup message to Discord"""
-    if not DISCORD_WEBHOOK_URL:
-        return
-    
-    try:
-        data = {"content": "🚀 Deal Sniper Bot started scanning...", "username": "Deal Sniper Bot"}
-        headers = {'Content-Type': 'application/json'}
+        payload = {"embeds": [embed]}
         
-        response = requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(data), headers=headers, timeout=10)
-        
-        if response.status_code == 204:
-            logger.info("✅ Startup message sent via webhook!")
-        else:
-            logger.error(f"❌ Failed to send startup message: {response.status_code}")
+        async with requests.Session() as session:
+            response = await asyncio.to_thread(session.post, DISCORD_WEBHOOK_URL, json=payload)
+            response.raise_for_status()
+            logger.info("✅ Discord message sent!")
             
-    except Exception as e:
-        logger.error(f"❌ Failed to send startup message: {e}")
-
-async def send_summary_message(total_listings: int, new_listings: int):
-    """Send summary message to Discord"""
-    if not DISCORD_WEBHOOK_URL:
-        return
-    
-    try:
-        if new_listings > 0:
-            message = f"✅ Scan completed! Found {new_listings} new deals out of {total_listings} listings."
-        else:
-            message = f"ℹ️ Scan completed. Checked {total_listings} listings but no new deals found."
+    except requests.exceptions.HTTPError as errh:
+        logger.error(f"Http Error: {errh}")
+    except requests.exceptions.ConnectionError as errc:
+        logger.error(f"Error Connecting: {errc}")
+    except requests.exceptions.Timeout as errt:
+        logger.error(f"Timeout Error: {errt}")
+    except requests.exceptions.RequestException as err:
+        logger.error(f"OOps: Something Else {err}")
         
-        data = {"content": message, "username": "Deal Sniper Bot"}
-        headers = {'Content-Type': 'application/json'}
-        
-        response = requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(data), headers=headers, timeout=10)
-        
-        if response.status_code == 204:
-            logger.info("✅ Summary message sent via webhook!")
-        else:
-            logger.error(f"❌ Failed to send summary message: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"❌ Failed to send summary message: {e}")
-
 def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
-    """Determine which search found this listing"""
-    title_lower = listing['title'].lower()
-    
+    """Find the search name for a given listing based on its query."""
     for search in searches:
-        search_name_lower = search['name'].lower()
-        search_words = search_name_lower.split()
-        if any(word in title_lower for word in search_words):
+        if listing['query'] == search['name']:
             return search['name']
-    
     return "Unknown Search"
 
 async def main():
-    """Main function to run the deal sniper bot"""
+    """Main function to run the scraping and analysis process."""
     logger.info("🚀 Starting scraping process...")
     
-    # Send startup message
-    await send_startup_message()
-    
-    # Your search configurations
+    # Example searches (you can customize these)
     searches = [
-        {
-            "name": "Gaming PC RTX 3080",
-            "url": "https://www.blocket.se/annonser/hela_sverige?q=rtx+3080&price_end=8000"
-        },
-        {
-            "name": "All Stationary Computers", 
-            "url": "https://www.blocket.se/annonser/hela_sverige/elektronik/datorer_tv_spel/stationara_datorer?cg=5021"
-        },
-        {
-            "name": "Workstation Xeon",
-            "url": "https://www.blocket.se/annonser/hela_sverige?q=xeon+workstation&price_end=5000"
-        }
+        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000},
+        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000},
+        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000}
     ]
     
-    all_new_listings = []
-    total_scanned = 0
+    # Initialize database
+    database.init_database()
     
+    all_new_listings = []
+    
+    # Process each search
     for search in searches:
-        logger.info(f"\n⚡ Fast scanning blocket for {search['name']}")
-        new_listings = await scraper.scrape_blocket_fast(search['url'], search['name'])
-        all_new_listings.extend(new_listings)
+        # Pass the full search dictionary to the scraper function
+        new_listings = await scraper.scrape_blocket(search)
         
-        # Count total scanned listings
-        total_scanned += len(new_listings) * 3
-        
+        if new_listings:
+            all_new_listings.extend(new_listings)
+            
         logger.info(f"Found {len(new_listings)} new listings on blocket for {search['name']}")
     
     logger.info(f"\n🚀 Total scan completed")
@@ -158,9 +102,6 @@ async def main():
     else:
         logger.info("No new listings to analyze. Exiting.")
     
-    # Send summary message
-    await send_summary_message(total_scanned, len(all_new_listings))
-    
     # Cleanup old listings
     try:
         database.cleanup_old_listings(30)
@@ -174,12 +115,4 @@ if __name__ == "__main__":
         os.remove("listings.db")
         logger.info("🧹 Removed old database to fix schema issues")
     
-    # Reinitialize database
-    import database
-    database.init_database()
-    
-    # Create screenshots directory
-    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-    
-    # Run main
     asyncio.run(main())
