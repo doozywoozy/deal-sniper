@@ -49,6 +49,10 @@ async def log_detection(page, reason, search_url):
             # Take screenshot asynchronously
             await page.screenshot(path=screenshot_path, full_page=True)
             logger.warning(f"Bot detection: {reason}. Screenshot saved: {screenshot_path}")
+            
+            # Also log the screenshot path for easy access in GitHub Actions
+            print(f"::notice::Screenshot saved: {screenshot_path}")
+            
         else:
             logger.warning(f"Bot detection: {reason}. URL: {search_url}")
     except Exception as e:
@@ -57,3 +61,11 @@ async def log_detection(page, reason, search_url):
 def log_detection_sync(reason, search_url):
     """Sync version for non-async contexts"""
     logger.warning(f"Bot detection: {reason}. URL: {search_url}")
+    print(f"::warning::Bot detection: {reason}")
+
+def log_github_actions_info():
+    """Log GitHub Actions specific information"""
+    if os.getenv('GITHUB_ACTIONS') == 'true':
+        logger.info("Running on GitHub Actions")
+        logger.info(f"Workspace: {os.getenv('GITHUB_WORKSPACE')}")
+        logger.info(f"Screenshot dir: {os.path.abspath(SCREENSHOT_DIR)}")
