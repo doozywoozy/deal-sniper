@@ -49,6 +49,7 @@ async def handle_cookie_consent(page):
 async def scrape_blocket(search: Dict) -> List[Dict]:
     """Scrape listings from Blocket based on a search query."""
     all_listings = []
+    browser = None
     
     try:
         async with async_playwright() as p:
@@ -74,38 +75,38 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
                     # Extract listings
                     listings = await extract_listings(page, search)
+                    all_listings.extend(listings)
                     
                     # Check for "no results"
                     page_text = await page.content()
                     if "inga resultat" in page_text.lower() or "inga annonser hittades" in page_text.lower():
                         logger.info("Genuine no results page")
+                        break
                     else:
-                        logger.warning("No listings found - taking debug screenshot")
-                        if ENABLE_SCREENSHOTS:
-                            from datetime import datetime
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
-                            await page.screenshot(path=screenshot_path, full_page=True)
-                            logger.info(f"No listings screenshot saved: {screenshot_path}")
-                    break
-                
-                all_listings.extend(listings)
-                
-                # Add delay between pages
-                if page_num < MAX_PAGES_TO_SCRAPE:
-                    await asyncio.sleep(REQUEST_DELAY)
+                        if not listings:
+                            logger.warning("No listings found - taking debug screenshot")
+                            if ENABLE_SCREENSHOTS:
+                                from datetime import datetime
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
+                                await page.screenshot(path=screenshot_path, full_page=True)
+                                logger.info(f"No listings screenshot saved: {screenshot_path}")
+                                
+                    # Add delay between pages
+                    if page_num < MAX_PAGES_TO_SCRAPE:
+                        await asyncio.sleep(REQUEST_DELAY)
                     
-            except Exception as e:
-                logger.error(f"Error on page {page_num}: {e}")
-                await log_detection(page, f"Error: {str(e)}", search_url)
-                break
+                except Exception as e:
+                    logger.error(f"Error on page {page_num}: {e}")
+                    await log_detection(page, f"Error: {str(e)}", search_url)
+                    break
                 
     except Exception as e:
         logger.error(f"Error during browser setup: {e}")
-        log_detection_sync(f"Browser error: {str(e)}", search_url)
+        log_detection_sync(f"Browser error: {str(e)}", "N/A")
     finally:
         if browser:
-            await browser.stop()
+            await browser.close()
     
     return all_listings
 
