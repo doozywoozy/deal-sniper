@@ -33,7 +33,8 @@ async def send_discord_message(listing: Dict, search_name: str):
         }
         
         if listing.get('location'):
-            embed["fields"].insert(1, {"name": "Location", "value": listing['location'], "inline': True})
+            # Corrected line below - changed 'inline': True to "inline": True
+            embed["fields"].insert(1, {"name": "Location", "value": listing['location'], "inline": True})
         
         if listing.get('image'):
             embed["thumbnail"] = {"url": listing['image']}
