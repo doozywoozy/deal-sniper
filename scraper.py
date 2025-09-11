@@ -2,7 +2,7 @@
 import asyncio
 import os
 from typing import List, Dict
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError
 from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, ENABLE_SCREENSHOTS, SCRAPE_TIMEOUT
 from logger import logger, log_detection, log_detection_sync
 import database
@@ -62,16 +62,19 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
             logger.info(f"\n⚡ Fast scanning blocket for {search['name']}")
             
             for page_num in range(1, MAX_PAGES_TO_SCRAPE + 1):
+                search_url = f"https://www.blocket.se/annonser/hela_sverige?q={search['query']}&price_end={search['price_end']}&page={page_num}"
+                logger.info(f"📄 Page {page_num}: {search_url}")
+                
                 try:
-                    search_url = f"https://www.blocket.se/annonser/hela_sverige?q={search['query']}&price_end={search['price_end']}&page={page_num}"
-                    logger.info(f"📄 Page {page_num}: {search_url}")
-                    
                     # Navigate to the search URL
                     await page.goto(search_url, wait_until="domcontentloaded")
                     
                     # Handle cookie consent on the first page
                     if page_num == 1:
                         await handle_cookie_consent(page)
+                    
+                    # Wait for a known element to indicate the page is loaded
+                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=SCRAPE_TIMEOUT)
 
                     # Extract listings
                     listings = await extract_listings(page, search)
@@ -91,15 +94,20 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                                 screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
                                 await page.screenshot(path=screenshot_path, full_page=True)
                                 logger.info(f"No listings screenshot saved: {screenshot_path}")
-                                
-                    # Add delay between pages
-                    if page_num < MAX_PAGES_TO_SCRAPE:
-                        await asyncio.sleep(REQUEST_DELAY)
+                                break
                     
+                except TimeoutError as te:
+                    logger.error(f"Error on page {page_num}: Timeout {te}")
+                    await log_detection(page, f"Error: {str(te)}", search_url)
+                    break
                 except Exception as e:
                     logger.error(f"Error on page {page_num}: {e}")
                     await log_detection(page, f"Error: {str(e)}", search_url)
                     break
+                    
+                # Add delay between pages
+                if page_num < MAX_PAGES_TO_SCRAPE:
+                    await asyncio.sleep(REQUEST_DELAY)
                 
     except Exception as e:
         logger.error(f"Error during browser setup: {e}")
@@ -115,7 +123,7 @@ async def extract_listings(page, search: Dict) -> List[Dict]:
     listings = []
     
     # Use a broader locator for the list items
-    listing_elements = await page.locator('article[data-testid*="listing-card"]').all()
+    listing_elements = await page.locator('div[data-testid="result-list"] article').all()
     
     if not listing_elements:
         logger.warning("No listings found with data-testid selector. Trying a different one.")
