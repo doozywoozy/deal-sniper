@@ -7,6 +7,65 @@ from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, ENABLE_SCREENSHOTS
 from logger import logger, log_detection, log_detection_sync
 import database
 
+async def handle_cookie_consent(page):
+    """Handle cookie consent popup by clicking 'Allow All'"""
+    try:
+        # Wait for cookie dialog to appear
+        await page.wait_for_timeout(2000)
+        
+        # Try multiple selectors for the "Allow All" button
+        allow_selectors = [
+            'button:has-text("Godkänn alla")',
+            'button:has-text("Accept all")', 
+            'button:has-text("Allow all")',
+            'button[data-testid*="accept"]',
+            'button[class*="accept"]',
+            'button[class*="consent"]',
+            '#acceptAllButton',
+            '.accept-all',
+            '[aria-label*="Godkänn alla"]',
+            '[aria-label*="Accept all"]'
+        ]
+        
+        for selector in allow_selectors:
+            try:
+                allow_button = await page.wait_for_selector(selector, timeout=5000)
+                if allow_button:
+                    await allow_button.click()
+                    logger.info("✅ Clicked 'Allow All' on cookie consent")
+                    await page.wait_for_timeout(1000)  # Wait for dialog to close
+                    return True
+            except Exception:
+                continue
+        
+        # If no button found, check if dialog exists but we couldn't click it
+        dialog_selectors = [
+            '[id*="cookie"]',
+            '[class*="cookie"]',
+            '[data-testid*="cookie"]',
+            '#cookieBanner',
+            '.cookie-consent'
+        ]
+        
+        for selector in dialog_selectors:
+            try:
+                dialog = await page.query_selector(selector)
+                if dialog:
+                    logger.warning("Cookie dialog found but couldn't find accept button")
+                    # Try to close with Escape key as fallback
+                    await page.keyboard.press('Escape')
+                    await page.wait_for_timeout(1000)
+                    return True
+            except Exception:
+                continue
+                
+        logger.info("No cookie consent dialog found")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Error handling cookie consent: {e}")
+        return False
+
 async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
     """Fast scraping using Playwright with pagination"""
     all_listings = []
@@ -55,10 +114,13 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
             
             try:
                 # Navigate with realistic timing
-                await page.goto(paginated_url, wait_until="networkidle", timeout=30000)
+                await page.goto(paginated_url, wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(2)
                 
-                # Check page content for bot detection
+                # Handle cookie consent before checking for bot detection
+                await handle_cookie_consent(page)
+                
+                # Check page content for bot detection (after handling cookies)
                 page_text = await page.evaluate('''() => document.body.textContent''')
                 
                 detection_keywords = ['captcha', 'robot', 'bot', 'cloudflare', 'access denied', 'blocked']
@@ -77,6 +139,12 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                         logger.info("Genuine no results page")
                     else:
                         logger.warning("No listings found but page doesn't indicate 'no results'")
+                        # Take screenshot for debugging
+                        if ENABLE_SCREENSHOTS:
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            screenshot_path = os.path.join("screenshots", f"debug_{timestamp}.png")
+                            await page.screenshot(path=screenshot_path, full_page=True)
+                            logger.info(f"Debug screenshot saved: {screenshot_path}")
                     break
                 
                 all_listings.extend(listings)
