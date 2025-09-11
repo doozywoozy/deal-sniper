@@ -12,12 +12,24 @@ import database
 async def handle_cookie_consent(page):
     """Handle cookie consent popup by clicking 'Allow All' with better detection"""
     try:
-        # Wait a bit longer for the cookie dialog to load
-        await page.wait_for_timeout(3000)
+        logger.info("Checking for cookie consent dialog...")
+        # Check for the cookie consent overlay
+        if await page.locator("div.js-react-modal-parent").is_visible(timeout=5000):
+            logger.info("Found modal parent, looking for button.")
         
-        # More comprehensive selectors for Swedish cookie buttons
+            # Try finding the 'Godkänn alla' button specifically
+            button = page.locator('button:has-text("Godkänn alla")')
+            
+            if await button.is_visible(timeout=5000):
+                logger.info("Found 'Godkänn alla' button. Clicking...")
+                await button.click()
+                logger.info("✅ Cookie consent handled successfully!")
+                return True
+            else:
+                logger.info("Did not find 'Godkänn alla' button, trying other selectors.")
+                
+        # More comprehensive selectors for Swedish cookie buttons (fallback)
         allow_selectors = [
-            'button:has-text("Godkänn alla")',
             'button:has-text("Acceptera alla")',
             'button:has-text("Tillåt alla")',
             'button:has-text("Accept all")', 
@@ -148,11 +160,11 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                 try:
                     await page.goto(url_to_scrape, timeout=SCRAPE_TIMEOUT)
                     
+                    # Handle cookie consent first
+                    await handle_cookie_consent(page)
+                    
                     # Wait for a known element to indicate the page is loaded
                     await page.wait_for_selector('article.jHwEw', timeout=SCRAPE_TIMEOUT)
-                    
-                    # Handle cookie consent
-                    await handle_cookie_consent(page)
                     
                     # Get the page content after handling cookies
                     html_content = await page.content()
