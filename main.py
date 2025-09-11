@@ -134,7 +134,7 @@ async def main():
     
     for search in searches:
         logger.info(f"\n⚡ Fast scanning blocket for {search['name']}")
-        new_listings = await scraper.scrape_blocket_search(search['url'], search['name'])
+        new_listings = await scraper.scrape_blocket_fast(search['url'], search['name'])
         all_new_listings.extend(new_listings)
         
         # Count total scanned listings
