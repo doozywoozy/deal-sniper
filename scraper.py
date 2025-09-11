@@ -2,9 +2,11 @@
 import asyncio
 import os
 import re
+import random
 from typing import Dict, List
 
 from playwright.async_api import TimeoutError, async_playwright
+from playwright_stealth import stealth_async  # Ensure this is installed via requirements.txt
 
 import database
 from config import (
@@ -21,24 +23,22 @@ async def handle_cookie_consent(page):
     try:
         logger.info("Looking for cookie consent dialog...")
 
-        # Directly target the 'Accept all' button. This is more reliable.
-        # We give it a 10-second timeout to appear.
-        accept_button = page.get_by_role("button", name="Godkänn alla")
+        # More robust selector using has-text for visible text matching
+        accept_button = page.locator('button:has-text("Godkänn alla")')
 
-        await accept_button.wait_for(timeout=10000)
+        # Increased timeout to 60s for slow loads
+        await accept_button.wait_for(state="visible", timeout=60000)
         await accept_button.click()
 
         logger.info("✅ Successfully clicked 'Godkänn alla' button!")
 
-        # Wait a moment for the dialog to disappear
+        # Wait for the dialog to disappear
         await page.wait_for_timeout(2000)
 
+    except TimeoutError as te:
+        logger.warning(f"Cookie button not found after timeout: {te}. Proceeding without click—popup may not be present.")
     except Exception as e:
-        # If the button isn't found after 10 seconds, we assume it's not there.
-        logger.warning(
-            f"Could not find or click cookie button, hopefully it's not needed. Error: {e}"
-        )
-        # Continue execution as the cookie dialog might not always appear.
+        logger.warning(f"Could not find or click cookie button, hopefully it's not needed. Error: {e}")
 
 
 async def scrape_blocket(search: Dict) -> List[Dict]:
@@ -48,10 +48,19 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                screen={"width": 1920, "height": 1080},
+                ignore_https_errors=True,
+                bypass_csp=True,
+                locale="sv-SE",  # Swedish locale
+            )
+            page = await context.new_page()
+            await stealth_async(page)  # Apply stealth
 
-            # Set a default timeout for all operations on the page
+            # Set default timeout
             page.set_default_timeout(SCRAPE_TIMEOUT)
 
             logger.info(f"\n⚡ Fast scanning blocket for {search['name']}")
@@ -61,17 +70,19 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                 logger.info(f"📄 Page {page_num}: {search_url}")
 
                 try:
-                    # Navigate to the search URL
+                    # Navigate
                     await page.goto(search_url, wait_until="domcontentloaded")
 
-                    # Handle cookie consent on the first page
+                    # Handle cookie on first page
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Wait for a known element to indicate the page is loaded
-                    await page.wait_for_selector(
-                        'input[aria-label="Sök på Blocket"]', timeout=SCRAPE_TIMEOUT
-                    )
+                    # Simulate human behavior: random wait and mouse move
+                    await page.wait_for_timeout(random.randint(2000, 5000))
+                    await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
+
+                    # Wait for listings container to confirm load (more reliable than search input)
+                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=SCRAPE_TIMEOUT)
 
                     # Extract listings
                     listings = await extract_listings(page, search)
@@ -103,7 +114,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                                 logger.info(
                                     f"No listings screenshot saved: {screenshot_path}"
                                 )
-                                # Break if no listings found on first page, as it's likely a bot-detection block
+                                # Break if no listings on first page
                                 break
 
                 except TimeoutError as te:
@@ -115,7 +126,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     await log_detection(page, f"Error: {str(e)}", search_url)
                     break
 
-                # Add delay between pages
+                # Delay between pages
                 if page_num < MAX_PAGES_TO_SCRAPE:
                     await asyncio.sleep(REQUEST_DELAY)
 
