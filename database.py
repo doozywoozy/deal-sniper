@@ -1,6 +1,7 @@
 # database.py
 import sqlite3
 from config import DATABASE_PATH
+from datetime import datetime
 
 def init_database():
     """Initialize the database with required tables"""
@@ -15,7 +16,7 @@ def init_database():
         price INTEGER,
         url TEXT,
         source TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
     
@@ -56,7 +57,7 @@ def cleanup_old_listings(days: int = 30):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
-    cursor.execute("DELETE FROM seen_listings WHERE created_at < datetime('now', ?)", (f'-{days} days',))
+    cursor.execute("DELETE FROM seen_listings WHERE timestamp < datetime('now', ?)", (f'-{days} days',))
     deleted_count = cursor.rowcount
     
     conn.commit()
