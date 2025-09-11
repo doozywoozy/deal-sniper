@@ -175,8 +175,23 @@ async def main():
     # Send summary message
     await send_summary_message(total_scanned, len(all_new_listings))
     
-    # Cleanup old listings
-    database.cleanup_old_listings(30)
+    # Cleanup old listings (with error handling)
+    try:
+        database.cleanup_old_listings(30)
+    except Exception as e:
+        print(f"⚠️ Could not cleanup old listings: {e}")
+        print("This is not a critical error, continuing...")
 
 if __name__ == "__main__":
+    # Delete old database to fix schema issues
+    import os
+    if os.path.exists("listings.db"):
+        os.remove("listings.db")
+        print("🧹 Removed old database to fix schema issues")
+    
+    # Reinitialize database
+    import database
+    database.init_database()
+    
+    # Run main
     asyncio.run(main())
