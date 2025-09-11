@@ -12,8 +12,15 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
         )
         page = await context.new_page()
         
@@ -27,42 +34,114 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                 
                 print(f"📄 Page {page_num}: {paginated_url}")
                 
-                await page.goto(paginated_url, wait_until="networkidle")
-                await page.wait_for_timeout(3000)  # Wait for content to load
+                await page.goto(paginated_url, wait_until="domcontentloaded")
+                await page.wait_for_timeout(5000)  # Wait longer for content to load
                 
-                # Extract listings
+                # Try multiple selectors for Blocket's structure
                 listings = await page.evaluate('''() => {
                     const items = [];
-                    const articles = document.querySelectorAll('article, [data-testid*="listing"], .listing');
+                    
+                    // Try multiple selectors for listings
+                    const selectors = [
+                        'article[data-testid*="listing"]',
+                        'article[data-testid*="ad"]',
+                        '[data-testid*="listing"]',
+                        '[data-testid*="ad"]',
+                        '.listing',
+                        '.ad',
+                        'article'
+                    ];
+                    
+                    let articles = [];
+                    for (const selector of selectors) {
+                        articles = document.querySelectorAll(selector);
+                        if (articles.length > 0) break;
+                    }
+                    
+                    console.log('Found', articles.length, 'articles using selector');
                     
                     articles.forEach(article => {
                         try {
-                            const titleElem = article.querySelector('h2 a, h3 a, [data-testid="listing-title"], .title');
-                            const priceElem = article.querySelector('[data-testid="listing-price"], .price, [class*="price"]');
-                            const linkElem = article.querySelector('a[href*="/annons/"], a[href*="/ad/"]');
-                            const imageElem = article.querySelector('img');
+                            // Try multiple title selectors
+                            const titleSelectors = [
+                                '[data-testid="listing-title"]',
+                                'h2', 'h3', '.title', '[class*="title"]',
+                                'a[data-testid*="title"]'
+                            ];
+                            
+                            let titleElem = null;
+                            for (const selector of titleSelectors) {
+                                titleElem = article.querySelector(selector);
+                                if (titleElem) break;
+                            }
+                            
+                            // Try multiple price selectors
+                            const priceSelectors = [
+                                '[data-testid="listing-price"]',
+                                '.price', '[class*="price"]',
+                                '[data-testid*="price"]'
+                            ];
+                            
+                            let priceElem = null;
+                            for (const selector of priceSelectors) {
+                                priceElem = article.querySelector(selector);
+                                if (priceElem) break;
+                            }
+                            
+                            // Try multiple link selectors
+                            const linkSelectors = [
+                                'a[href*="/annons/"]',
+                                'a[href*="/ad/"]',
+                                'a[data-testid*="link"]'
+                            ];
+                            
+                            let linkElem = null;
+                            for (const selector of linkSelectors) {
+                                linkElem = article.querySelector(selector);
+                                if (linkElem) break;
+                            }
                             
                             if (titleElem && priceElem && linkElem) {
-                                const title = titleElem.textContent.trim();
-                                const priceText = priceElem.textContent.trim().replace(/\\s+/g, '');
+                                const title = titleElem.textContent?.trim() || '';
+                                const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
                                 const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
                                 const url = linkElem.href;
-                                const image = imageElem ? imageElem.src : '';
-                                const id = url.split('/').pop().split('?')[0];
                                 
-                                // Get location if available
-                                const locationElem = article.querySelector('[data-testid="listing-location"], .location, [class*="location"]');
-                                const location = locationElem ? locationElem.textContent.trim() : '';
+                                // Get image
+                                const imageSelectors = ['img', '[data-testid*="image"]'];
+                                let imageElem = null;
+                                for (const selector of imageSelectors) {
+                                    imageElem = article.querySelector(selector);
+                                    if (imageElem) break;
+                                }
+                                const image = imageElem?.src || '';
                                 
-                                items.push({
-                                    id: id,
-                                    title: title,
-                                    price: price,
-                                    url: url,
-                                    image: image,
-                                    location: location,
-                                    source: 'blocket'
-                                });
+                                // Get location
+                                const locationSelectors = [
+                                    '[data-testid="listing-location"]',
+                                    '.location', '[class*="location"]'
+                                ];
+                                let locationElem = null;
+                                for (const selector of locationSelectors) {
+                                    locationElem = article.querySelector(selector);
+                                    if (locationElem) break;
+                                }
+                                const location = locationElem?.textContent?.trim() || '';
+                                
+                                // Generate ID from URL
+                                const id = url.split('/').filter(Boolean).pop().split('?')[0];
+                                
+                                if (title && price > 0) {
+                                    items.push({
+                                        id: id,
+                                        title: title,
+                                        price: price,
+                                        url: url,
+                                        image: image,
+                                        location: location,
+                                        source: 'blocket'
+                                    });
+                                }
                             }
                         } catch (e) {
                             console.log('Error parsing article:', e);
@@ -163,7 +242,7 @@ async def scrape_blocket_search(search_url: str, search_name: str) -> List[Dict]
         # Check if profitable
         if is_profitable(listing, search_name):
             valid_listings.append(listing)
-            database.mark_listing_seen(listing['id'])
+            database.mark_listing_seen(listing['id'], listing['title'], listing['price'], listing['url'])
     
     print(f"🎯 Total valid listings found: {len(valid_listings)}")
     return valid_listings
