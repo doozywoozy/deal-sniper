@@ -1,8 +1,10 @@
 # scraper.py
 import asyncio
+import os
 from typing import List, Dict
 from playwright.async_api import async_playwright
-from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, PRICE_THRESHOLDS, KEYWORDS
+from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, ENABLE_SCREENSHOTS
+from logger import logger, log_detection
 import database
 
 async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
@@ -10,7 +12,7 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
     all_listings = []
     
     async with async_playwright() as p:
-        # Launch browser with more stealth options
+        # Launch browser with stealth options
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -18,36 +20,62 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--disable-gpu'
+                '--single-process',
+                '--no-zygote',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor'
             ]
         )
         
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
+            viewport={'width': 1366, 'height': 768},
             locale='sv-SE',
             timezone_id='Europe/Stockholm',
             extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'sv-SE,sv;q=0.9,en;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'sv-SE,sv;q=0.8,en-US;q=0.5,en;q=0.3',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
             }
         )
         
-        # Add stealth evasions
+        # Stealth evasions
         await context.add_init_script("""
-            delete navigator.__proto__.webdriver;
-            window.chrome = {runtime: {}};
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            // Overwrite the `languages` property to use a custom getter.
+            Object.defineProperty(navigator, 'languages', {
+                get: function () {
+                    return ['sv-SE', 'sv', 'en-US', 'en'];
+                },
+            });
+            
+            // Overwrite the `plugins` property to use a custom getter.
+            Object.defineProperty(navigator, 'plugins', {
+                get: function () {
+                    return [1, 2, 3, 4, 5];
+                },
+            });
+            
+            // Pass the Webdriver test
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+            
+            // Pass the Chrome test.
+            window.chrome = {
+                runtime: {},
+            };
+            
+            // Pass the Permissions test.
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
         """)
         
         page = await context.new_page()
@@ -60,186 +88,225 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                 else:
                     paginated_url = f"{search_url}?page={page_num}"
                 
-                print(f"📄 Page {page_num}: {paginated_url}")
+                logger.info(f"📄 Page {page_num}: {paginated_url}")
                 
                 # Navigate with realistic timing
                 await page.goto(paginated_url, wait_until="networkidle", timeout=30000)
-                await page.wait_for_timeout(3000)  # Wait for content to load
+                await asyncio.sleep(2)  # Human-like delay
                 
-                # Check if we got blocked
+                # Check page content for bot detection
                 page_content = await page.content()
-                if "captcha" in page_content.lower() or "robot" in page_content.lower():
-                    print("⚠️ Possible bot detection detected!")
+                page_text = await page.evaluate('''() => document.body.textContent''')
+                
+                detection_keywords = ['captcha', 'robot', 'bot', 'cloudflare', 'access denied', 'blocked']
+                is_detected = any(keyword in page_text.lower() for keyword in detection_keywords)
+                
+                if is_detected and ENABLE_SCREENSHOTS:
+                    await log_detection(page, f"Detection on page {page_num}", search_url)
                     break
                 
-                # Try multiple approaches to find listings
-                listings = []
+                # Try multiple scraping approaches
+                listings = await try_scraping_approaches(page)
                 
-                # Approach 1: Try data-testid attributes (modern Blocket)
-                try:
-                    listings = await page.evaluate('''() => {
-                        const items = [];
-                        // Look for listing containers
-                        const listingContainers = document.querySelectorAll('[data-testid*="listing"], [data-testid*="ad"]');
-                        
-                        for (const container of listingContainers) {
-                            try {
-                                const titleElem = container.querySelector('[data-testid*="title"], h2, h3');
-                                const priceElem = container.querySelector('[data-testid*="price"], [class*="price"]');
-                                const linkElem = container.querySelector('a[href*="/annons/"], a[href*="/ad/"]');
-                                
-                                if (titleElem && priceElem && linkElem) {
-                                    const title = titleElem.textContent?.trim() || '';
-                                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
-                                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
-                                    const url = linkElem.href;
-                                    
-                                    // Generate ID from URL
-                                    const id = url.split('/').filter(Boolean).pop().split('?')[0];
-                                    
-                                    if (title && price > 0) {
-                                        items.push({
-                                            id: id,
-                                            title: title,
-                                            price: price,
-                                            url: url,
-                                            source: 'blocket'
-                                        });
-                                    }
-                                }
-                            } catch (e) {
-                                console.log('Error parsing container:', e);
-                            }
-                        }
-                        return items;
-                    }''')
-                except Exception as e:
-                    print(f"Error with data-testid approach: {e}")
+                logger.info(f"Found {len(listings)} articles on page {page_num}")
                 
-                # Approach 2: If no listings found, try article tags
                 if not listings:
-                    try:
-                        listings = await page.evaluate('''() => {
-                            const items = [];
-                            const articles = document.querySelectorAll('article');
-                            
-                            for (const article of articles) {
-                                try {
-                                    const titleElem = article.querySelector('h2, h3, [class*="title"]');
-                                    const priceElem = article.querySelector('[class*="price"]');
-                                    const linkElem = article.querySelector('a');
-                                    
-                                    if (titleElem && priceElem && linkElem && linkElem.href.includes('/annons/')) {
-                                        const title = titleElem.textContent?.trim() || '';
-                                        const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
-                                        const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
-                                        const url = linkElem.href;
-                                        
-                                        const id = url.split('/').filter(Boolean).pop().split('?')[0];
-                                        
-                                        if (title && price > 0) {
-                                            items.push({
-                                                id: id,
-                                                title: title,
-                                                price: price,
-                                                url: url,
-                                                source: 'blocket'
-                                            });
-                                        }
-                                    }
-                                } catch (e) {
-                                    console.log('Error parsing article:', e);
-                                }
-                            }
-                            return items;
-                        }''')
-                    except Exception as e:
-                        print(f"Error with article approach: {e}")
-                
-                # Approach 3: Debug - print page content to understand structure
-                if not listings:
-                    print("⚠️ No listings found with standard selectors")
-                    # Let's see what's actually on the page
-                    page_text = await page.evaluate('''() => {
-                        return document.body.textContent;
-                    }''')
-                    if "inga annonser" in page_text.lower() or "no hits" in page_text.lower():
-                        print("ℹ️ Page indicates no listings found")
+                    # Check if it's a genuine "no results" page
+                    if "inga annonser" in page_text.lower() or "no results" in page_text.lower():
+                        logger.info("Genuine no results page")
                     else:
-                        print("🔍 Page content sample:", page_text[:200] + "...")
-                
-                print(f"Found {len(listings)} articles on page {page_num}")
-                
-                if not listings:
-                    print("No more listings found, stopping pagination.")
+                        logger.warning("No listings found but page doesn't indicate 'no results'")
                     break
                 
                 all_listings.extend(listings)
                 
-                # Add delay between pages to be respectful
+                # Add delay between pages
                 if page_num < MAX_PAGES_TO_SCRAPE:
                     await asyncio.sleep(REQUEST_DELAY)
                     
         except Exception as e:
-            print(f"Error during scraping: {e}")
+            logger.error(f"Error during scraping: {e}")
+            if ENABLE_SCREENSHOTS:
+                await log_detection(page, f"Error: {str(e)}", search_url)
         finally:
             await browser.close()
     
     return all_listings
 
+async def try_scraping_approaches(page):
+    """Try different approaches to scrape listings"""
+    approaches = [
+        scrape_modern_blocket,
+        scrape_article_based,
+        scrape_fallback
+    ]
+    
+    for approach in approaches:
+        try:
+            listings = await approach(page)
+            if listings:
+                return listings
+        except Exception as e:
+            logger.debug(f"Approach failed: {e}")
+    
+    return []
+
+async def scrape_modern_blocket(page):
+    """Modern Blocket with data-testid attributes"""
+    return await page.evaluate('''() => {
+        const items = [];
+        const listings = document.querySelectorAll('[data-testid*="listing-container"], [data-testid*="ad-item"]');
+        
+        for (const listing of listings) {
+            try {
+                const titleElem = listing.querySelector('[data-testid*="title"], [data-testid*="heading"]');
+                const priceElem = listing.querySelector('[data-testid*="price"]');
+                const linkElem = listing.querySelector('a[href*="/annons/"]');
+                
+                if (titleElem && priceElem && linkElem) {
+                    const title = titleElem.textContent?.trim() || '';
+                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
+                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
+                    const url = linkElem.href;
+                    
+                    if (title && price > 0) {
+                        items.push({
+                            id: url.split('/').pop().split('?')[0],
+                            title: title,
+                            price: price,
+                            url: url,
+                            source: 'blocket'
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Error parsing listing:', e);
+            }
+        }
+        return items;
+    }''')
+
+async def scrape_article_based(page):
+    """Traditional article-based scraping"""
+    return await page.evaluate('''() => {
+        const items = [];
+        const articles = document.querySelectorAll('article, .listing-item, .ad-item');
+        
+        for (const article of articles) {
+            try {
+                const titleElem = article.querySelector('h2, h3, .title, [class*="title"]');
+                const priceElem = article.querySelector('.price, [class*="price"], .amount');
+                const linkElem = article.querySelector('a[href*="/annons/"]');
+                
+                if (titleElem && priceElem && linkElem) {
+                    const title = titleElem.textContent?.trim() || '';
+                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
+                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
+                    const url = linkElem.href;
+                    
+                    if (title && price > 0) {
+                        items.push({
+                            id: url.split('/').pop().split('?')[0],
+                            title: title,
+                            price: price,
+                            url: url,
+                            source: 'blocket'
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Error parsing article:', e);
+            }
+        }
+        return items;
+    }''')
+
+async def scrape_fallback(page):
+    """Fallback approach using broader selectors"""
+    return await page.evaluate('''() => {
+        const items = [];
+        const links = document.querySelectorAll('a[href*="/annons/"]');
+        
+        for (const link of links) {
+            try {
+                // Look for title and price in parent elements
+                const container = link.closest('div, article, li');
+                if (!container) continue;
+                
+                const titleElem = container.querySelector('h2, h3, h4, .title, [class*="title"]') || link;
+                const priceElem = container.querySelector('.price, [class*="price"], .amount, [class*="cost"]');
+                
+                if (titleElem && priceElem) {
+                    const title = titleElem.textContent?.trim() || '';
+                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
+                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
+                    const url = link.href;
+                    
+                    if (title && price > 0 && title.length > 5) {
+                        items.push({
+                            id: url.split('/').pop().split('?')[0],
+                            title: title,
+                            price: price,
+                            url: url,
+                            source: 'blocket'
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Error parsing fallback:', e);
+            }
+        }
+        return items;
+    }''')
+
 def is_profitable(listing: Dict, search_name: str) -> bool:
-    """Determine if a listing is profitable based on search type"""
+    """Determine if a listing is profitable"""
+    from config import PRICE_THRESHOLDS, KEYWORDS
+    
     title_lower = listing['title'].lower()
     price = listing['price']
     
-    # Skip listings with no price or unrealistic prices
     if price <= 0 or price > 50000:
         return False
     
-    # Apply different filters based on search type
     if "rtx 3080" in search_name.lower():
         return (price <= PRICE_THRESHOLDS["rtx_3080"] and 
-                any(keyword in title_lower for keyword in ["rtx 3080", "3080", "geforce"]))
+                any(keyword in title_lower for keyword in KEYWORDS["rtx_3080"]))
     
     elif "xeon" in search_name.lower():
         return (price <= PRICE_THRESHOLDS["xeon_workstation"] and 
-                any(keyword in title_lower for keyword in ["xeon", "workstation", "server"]))
+                any(keyword in title_lower for keyword in KEYWORDS["xeon_workstation"]))
     
     else:
         return (price <= PRICE_THRESHOLDS["stationary_computers"] and 
-                any(keyword in title_lower for keyword in ["dator", "computer", "pc", "stationär"]))
+                any(keyword in title_lower for keyword in KEYWORDS["stationary_computers"]))
 
 async def scrape_blocket_search(search_url: str, search_name: str) -> List[Dict]:
     """Main scraping function with deduplication"""
-    print(f"🚀 Fast scraping: {search_url}")
+    logger.info(f"🚀 Fast scraping: {search_url}")
     
-    # Scrape all pages
     all_listings = await scrape_blocket_fast(search_url, search_name)
     
     if not all_listings:
-        print("No listings found at all")
+        logger.info("No listings found at all")
         return []
     
-    print(f"⚡ Scanned {len(all_listings)} articles total across {MAX_PAGES_TO_SCRAPE} pages")
+    logger.info(f"⚡ Scanned {len(all_listings)} articles total across {MAX_PAGES_TO_SCRAPE} pages")
     
-    # Filter and deduplicate
     valid_listings = []
     seen_ids = set()
     
     for listing in all_listings:
-        # Skip duplicates in this batch
         if listing['id'] in seen_ids:
             continue
         seen_ids.add(listing['id'])
         
-        # Skip if already in database
         if database.is_listing_seen(listing['id']):
             continue
             
-        # Check if profitable
         if is_profitable(listing, search_name):
             valid_listings.append(listing)
             database.mark_listing_seen(listing['id'], listing['title'], listing['price'], listing['url'])
     
-    print(f"🎯 Total valid listings found: {len(valid_listings)}")
+    logger.info(f"🎯 Total valid listings found: {len(valid_listings)}")
     return valid_listings
