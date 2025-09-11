@@ -9,9 +9,11 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 AI_MODEL = "mistral:7b"
 
 # Scraping settings
-MAX_PAGES_TO_SCRAPE = 3  # Number of pages to scrape per search
-REQUEST_DELAY = 2  # Increased delay between requests
-SCRAPE_TIMEOUT = 30000  # 30 seconds timeout
+MAX_PAGES_TO_SCRAPE = 3
+REQUEST_DELAY = 3  # Increased delay
+SCRAPE_TIMEOUT = 30000
+ENABLE_SCREENSHOTS = True  # Enable screenshot capture
+LOG_LEVEL = "DEBUG"  # DEBUG, INFO, WARNING, ERROR
 
 # Profitability thresholds (in SEK)
 PRICE_THRESHOLDS = {
@@ -29,3 +31,5 @@ KEYWORDS = {
 
 # Database path
 DATABASE_PATH = "listings.db"
+LOG_FILE = "scraper.log"
+SCREENSHOT_DIR = "screenshots"
