@@ -74,7 +74,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                         await handle_cookie_consent(page)
                     
                     # Wait for a known element to indicate the page is loaded
-                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=SCRAPE_TIMEOUT)
+                    await page.wait_for_selector('input[aria-label="Sök på Blocket"]', timeout=SCRAPE_TIMEOUT)
 
                     # Extract listings
                     listings = await extract_listings(page, search)
@@ -86,14 +86,15 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                         logger.info("Genuine no results page")
                         break
                     else:
-                        if not listings:
-                            logger.warning("No listings found - taking debug screenshot")
+                        if not listings and page_num == 1:
+                            logger.warning("No listings found on the first page - taking debug screenshot")
                             if ENABLE_SCREENSHOTS:
                                 from datetime import datetime
                                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                                 screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
                                 await page.screenshot(path=screenshot_path, full_page=True)
                                 logger.info(f"No listings screenshot saved: {screenshot_path}")
+                                # Break if no listings found on first page, as it's likely a bot-detection block
                                 break
                     
                 except TimeoutError as te:
