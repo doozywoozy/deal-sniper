@@ -13,22 +13,20 @@ async def handle_cookie_consent(page):
     """Handle cookie consent popup by clicking 'Allow All' with better detection"""
     try:
         logger.info("Checking for cookie consent dialog...")
-        # Check for the cookie consent overlay
-        if await page.locator("div.js-react-modal-parent").is_visible(timeout=5000):
-            logger.info("Found modal parent, looking for button.")
         
-            # Try finding the 'Godkänn alla' button specifically
-            button = page.locator('button:has-text("Godkänn alla")')
+        # New, more reliable method using get_by_role and text
+        allow_button = page.get_by_role("button", name="Godkänn alla", exact=True)
+        
+        # Wait specifically for the button to appear and be visible
+        if await allow_button.is_visible(timeout=5000):
+            logger.info("Found 'Godkänn alla' button with get_by_role. Clicking...")
+            await allow_button.click()
+            logger.info("✅ Cookie consent handled successfully!")
+            return True
+        else:
+            logger.info("Did not find 'Godkänn alla' button, trying other selectors.")
             
-            if await button.is_visible(timeout=5000):
-                logger.info("Found 'Godkänn alla' button. Clicking...")
-                await button.click()
-                logger.info("✅ Cookie consent handled successfully!")
-                return True
-            else:
-                logger.info("Did not find 'Godkänn alla' button, trying other selectors.")
-                
-        # More comprehensive selectors for Swedish cookie buttons (fallback)
+        # Fallback to the previous, less specific selectors
         allow_selectors = [
             'button:has-text("Acceptera alla")',
             'button:has-text("Tillåt alla")',
