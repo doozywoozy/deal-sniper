@@ -4,13 +4,14 @@ import os
 import json
 import requests
 from typing import List, Dict
-from logger import logger, setup_logger
+from logger import logger, setup_logger, log_github_actions_info
 import scraper
 import database
 from config import DISCORD_WEBHOOK_URL, SCREENSHOT_DIR
 
 # Setup logger
 setup_logger()
+log_github_actions_info()
 
 async def send_discord_message(listing: Dict, search_name: str):
     """Send a listing to Discord via webhook"""
