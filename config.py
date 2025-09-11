@@ -10,7 +10,8 @@ AI_MODEL = "mistral:7b"
 
 # Scraping settings
 MAX_PAGES_TO_SCRAPE = 3  # Number of pages to scrape per search
-REQUEST_DELAY = 1  # Delay between requests in seconds
+REQUEST_DELAY = 2  # Increased delay between requests
+SCRAPE_TIMEOUT = 30000  # 30 seconds timeout
 
 # Profitability thresholds (in SEK)
 PRICE_THRESHOLDS = {
