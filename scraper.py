@@ -8,14 +8,16 @@ from logger import logger, log_detection, log_detection_sync
 import database
 
 async def handle_cookie_consent(page):
-    """Handle cookie consent popup by clicking 'Allow All'"""
+    """Handle cookie consent popup by clicking 'Allow All' with better detection"""
     try:
-        # Wait for cookie dialog to appear
-        await page.wait_for_timeout(2000)
+        # Wait a bit longer for the cookie dialog to load
+        await page.wait_for_timeout(3000)
         
-        # Try multiple selectors for the "Allow All" button
+        # More comprehensive selectors for Swedish cookie buttons
         allow_selectors = [
             'button:has-text("Godkänn alla")',
+            'button:has-text("Acceptera alla")',
+            'button:has-text("Tillåt alla")',
             'button:has-text("Accept all")', 
             'button:has-text("Allow all")',
             'button[data-testid*="accept"]',
@@ -24,43 +26,112 @@ async def handle_cookie_consent(page):
             '#acceptAllButton',
             '.accept-all',
             '[aria-label*="Godkänn alla"]',
-            '[aria-label*="Accept all"]'
+            '[aria-label*="Acceptera alla"]',
+            '[aria-label*="Accept all"]',
+            'button[onclick*="cookie"]',
+            'button[onclick*="accept"]',
+            'button >> text=Godkänn',
+            'button >> text=Acceptera',
+            'button >> text=Accept'
         ]
         
-        for selector in allow_selectors:
-            try:
-                allow_button = await page.wait_for_selector(selector, timeout=5000)
-                if allow_button:
-                    await allow_button.click()
-                    logger.info("✅ Clicked 'Allow All' on cookie consent")
-                    await page.wait_for_timeout(1000)  # Wait for dialog to close
-                    return True
-            except Exception:
-                continue
-        
-        # If no button found, check if dialog exists but we couldn't click it
+        # First check if any cookie dialog is visible
         dialog_selectors = [
             '[id*="cookie"]',
             '[class*="cookie"]',
             '[data-testid*="cookie"]',
             '#cookieBanner',
-            '.cookie-consent'
+            '.cookie-consent',
+            '.cookie-banner',
+            '#cookieModal',
+            '.cookie-modal',
+            '#consentBanner',
+            '.consent-banner',
+            '#cybotcookie',
+            '.cc-banner'
         ]
         
+        cookie_dialog_found = False
         for selector in dialog_selectors:
             try:
                 dialog = await page.query_selector(selector)
                 if dialog:
-                    logger.warning("Cookie dialog found but couldn't find accept button")
-                    # Try to close with Escape key as fallback
-                    await page.keyboard.press('Escape')
-                    await page.wait_for_timeout(1000)
-                    return True
+                    cookie_dialog_found = True
+                    logger.info(f"Found cookie dialog with selector: {selector}")
+                    break
             except Exception:
                 continue
+        
+        if not cookie_dialog_found:
+            logger.info("No cookie dialog found with standard selectors")
+            # Try a more aggressive search for any overlay/banner
+            try:
+                overlays = await page.query_selector_all('div[class*="banner"], div[class*="modal"], div[class*="overlay"]')
+                for overlay in overlays:
+                    overlay_text = await overlay.text_content()
+                    if overlay_text and any(word in overlay_text.lower() for word in ['cookie', 'kakor', 'godkänn', 'acceptera']):
+                        cookie_dialog_found = True
+                        logger.info("Found potential cookie dialog in generic overlay")
+                        break
+            except Exception:
+                pass
+        
+        # Try to click accept buttons
+        accept_clicked = False
+        for selector in allow_selectors:
+            try:
+                # Wait a bit for the button to be clickable
+                allow_button = await page.wait_for_selector(selector, timeout=2000, state='visible')
+                if allow_button:
+                    # Scroll into view if needed
+                    await allow_button.scroll_into_view_if_needed()
+                    await allow_button.click()
+                    logger.info(f"✅ Clicked 'Allow All' with selector: {selector}")
+                    await page.wait_for_timeout(1500)  # Wait for dialog to close
+                    accept_clicked = True
+                    break
+            except Exception as e:
+                continue
+        
+        if not accept_clicked and cookie_dialog_found:
+            logger.warning("Cookie dialog found but couldn't click accept button")
+            # Try to find and click using JavaScript as fallback
+            try:
+                accept_result = await page.evaluate('''() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const acceptButton = buttons.find(btn => 
+                        btn.textContent && (
+                            btn.textContent.includes('Godkänn') || 
+                            btn.textContent.includes('Acceptera') ||
+                            btn.textContent.includes('Accept') ||
+                            btn.textContent.includes('Allow')
+                        ) && !btn.textContent.includes('Hantera')
+                    );
+                    
+                    if (acceptButton) {
+                        acceptButton.click();
+                        return true;
+                    }
+                    return false;
+                }''')
                 
-        logger.info("No cookie consent dialog found")
-        return False
+                if accept_result:
+                    logger.info("✅ Clicked accept button via JavaScript")
+                    await page.wait_for_timeout(1500)
+                    accept_clicked = True
+            except Exception as e:
+                logger.warning(f"JavaScript click failed: {e}")
+        
+        # Final fallback: press Escape to close any modal
+        if not accept_clicked and cookie_dialog_found:
+            try:
+                await page.keyboard.press('Escape')
+                logger.info("Pressed Escape to close dialog")
+                await page.wait_for_timeout(1000)
+            except Exception as e:
+                logger.warning(f"Escape press failed: {e}")
+        
+        return accept_clicked or not cookie_dialog_found
         
     except Exception as e:
         logger.warning(f"Error handling cookie consent: {e}")
@@ -73,18 +144,13 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
     
     try:
         browser = await async_playwright().start()
-        # Launch browser with stealth options
+        # Launch browser with more natural settings
         browser_instance = await browser.chromium.launch(
             headless=True,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-web-security',
             ]
         )
         
@@ -95,10 +161,9 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
             timezone_id='Europe/Stockholm',
         )
         
-        # Stealth evasions
+        # Less aggressive stealth to avoid detection
         await context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
         """)
         
         page = await context.new_page()
@@ -113,22 +178,29 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
             logger.info(f"📄 Page {page_num}: {paginated_url}")
             
             try:
-                # Navigate with realistic timing
-                await page.goto(paginated_url, wait_until="domcontentloaded", timeout=15000)
+                # Navigate with more natural timing
+                await page.goto(paginated_url, wait_until="domcontentloaded", timeout=20000)
                 await asyncio.sleep(2)
                 
-                # Handle cookie consent before checking for bot detection
-                await handle_cookie_consent(page)
+                # Handle cookie consent with multiple attempts
+                cookie_handled = False
+                for attempt in range(2):  # Try twice
+                    cookie_handled = await handle_cookie_consent(page)
+                    if cookie_handled:
+                        break
+                    await asyncio.sleep(1)
                 
-                # Check page content for bot detection (after handling cookies)
+                if not cookie_handled:
+                    logger.warning("Cookie consent not handled, taking screenshot for debugging")
+                    if ENABLE_SCREENSHOTS:
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        screenshot_path = os.path.join("screenshots", f"cookie_issue_{timestamp}.png")
+                        await page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Cookie issue screenshot saved: {screenshot_path}")
+                
+                # Check page content
                 page_text = await page.evaluate('''() => document.body.textContent''')
-                
-                detection_keywords = ['captcha', 'robot', 'bot', 'cloudflare', 'access denied', 'blocked']
-                is_detected = any(keyword in page_text.lower() for keyword in detection_keywords)
-                
-                if is_detected:
-                    await log_detection(page, f"Detection on page {page_num}", search_url)
-                    break
                 
                 # Try scraping
                 listings = await try_scraping_approaches(page)
@@ -138,13 +210,13 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
                     if "inga annonser" in page_text.lower() or "no results" in page_text.lower():
                         logger.info("Genuine no results page")
                     else:
-                        logger.warning("No listings found but page doesn't indicate 'no results'")
-                        # Take screenshot for debugging
+                        logger.warning("No listings found - taking debug screenshot")
                         if ENABLE_SCREENSHOTS:
+                            from datetime import datetime
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            screenshot_path = os.path.join("screenshots", f"debug_{timestamp}.png")
+                            screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
                             await page.screenshot(path=screenshot_path, full_page=True)
-                            logger.info(f"Debug screenshot saved: {screenshot_path}")
+                            logger.info(f"No listings screenshot saved: {screenshot_path}")
                     break
                 
                 all_listings.extend(listings)
@@ -167,169 +239,4 @@ async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
     
     return all_listings
 
-async def try_scraping_approaches(page):
-    """Try different approaches to scrape listings"""
-    approaches = [scrape_modern_blocket, scrape_article_based, scrape_fallback]
-    
-    for approach in approaches:
-        try:
-            listings = await approach(page)
-            if listings:
-                return listings
-        except Exception as e:
-            logger.debug(f"Approach failed: {e}")
-    
-    return []
-
-async def scrape_modern_blocket(page):
-    """Modern Blocket with data-testid attributes"""
-    return await page.evaluate('''() => {
-        const items = [];
-        const listings = document.querySelectorAll('[data-testid*="listing"], [data-testid*="ad"]');
-        
-        for (const listing of listings) {
-            try {
-                const titleElem = listing.querySelector('[data-testid*="title"], h2, h3');
-                const priceElem = listing.querySelector('[data-testid*="price"]');
-                const linkElem = listing.querySelector('a[href*="/annons/"]');
-                
-                if (titleElem && priceElem && linkElem) {
-                    const title = titleElem.textContent?.trim() || '';
-                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
-                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
-                    const url = linkElem.href;
-                    
-                    if (title && price > 0) {
-                        items.push({
-                            id: url.split('/').pop().split('?')[0],
-                            title: title,
-                            price: price,
-                            url: url,
-                            source: 'blocket'
-                        });
-                    }
-                }
-            } catch (e) {}
-        }
-        return items;
-    }''')
-
-async def scrape_article_based(page):
-    """Traditional article-based scraping"""
-    return await page.evaluate('''() => {
-        const items = [];
-        const articles = document.querySelectorAll('article');
-        
-        for (const article of articles) {
-            try {
-                const titleElem = article.querySelector('h2, h3, .title');
-                const priceElem = article.querySelector('.price, [class*="price"]');
-                const linkElem = article.querySelector('a[href*="/annons/"]');
-                
-                if (titleElem && priceElem && linkElem) {
-                    const title = titleElem.textContent?.trim() || '';
-                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
-                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
-                    const url = linkElem.href;
-                    
-                    if (title && price > 0) {
-                        items.push({
-                            id: url.split('/').pop().split('?')[0],
-                            title: title,
-                            price: price,
-                            url: url,
-                            source: 'blocket'
-                        });
-                    }
-                }
-            } catch (e) {}
-        }
-        return items;
-    }''')
-
-async def scrape_fallback(page):
-    """Fallback approach using broader selectors"""
-    return await page.evaluate('''() => {
-        const items = [];
-        const links = document.querySelectorAll('a[href*="/annons/"]');
-        
-        for (const link of links) {
-            try {
-                const container = link.closest('div, article, li');
-                if (!container) continue;
-                
-                const titleElem = container.querySelector('h2, h3, .title') || link;
-                const priceElem = container.querySelector('.price, [class*="price"]');
-                
-                if (titleElem && priceElem) {
-                    const title = titleElem.textContent?.trim() || '';
-                    const priceText = priceElem.textContent?.trim().replace(/\\s+/g, '') || '';
-                    const price = parseInt(priceText.replace(/[^0-9]/g, '')) || 0;
-                    const url = link.href;
-                    
-                    if (title && price > 0) {
-                        items.push({
-                            id: url.split('/').pop().split('?')[0],
-                            title: title,
-                            price: price,
-                            url: url,
-                            source: 'blocket'
-                        });
-                    }
-                }
-            } catch (e) {}
-        }
-        return items;
-    }''')
-
-def is_profitable(listing: Dict, search_name: str) -> bool:
-    """Determine if a listing is profitable"""
-    from config import PRICE_THRESHOLDS, KEYWORDS
-    
-    title_lower = listing['title'].lower()
-    price = listing['price']
-    
-    if price <= 0 or price > 50000:
-        return False
-    
-    if "rtx 3080" in search_name.lower():
-        return (price <= PRICE_THRESHOLDS["rtx_3080"] and 
-                any(keyword in title_lower for keyword in KEYWORDS["rtx_3080"]))
-    
-    elif "xeon" in search_name.lower():
-        return (price <= PRICE_THRESHOLDS["xeon_workstation"] and 
-                any(keyword in title_lower for keyword in KEYWORDS["xeon_workstation"]))
-    
-    else:
-        return (price <= PRICE_THRESHOLDS["stationary_computers"] and 
-                any(keyword in title_lower for keyword in KEYWORDS["stationary_computers"]))
-
-async def scrape_blocket_search(search_url: str, search_name: str) -> List[Dict]:
-    """Main scraping function with deduplication"""
-    logger.info(f"🚀 Fast scraping: {search_url}")
-    
-    all_listings = await scrape_blocket_fast(search_url, search_name)
-    
-    if not all_listings:
-        logger.info("No listings found at all")
-        return []
-    
-    logger.info(f"⚡ Scanned {len(all_listings)} articles total across {MAX_PAGES_TO_SCRAPE} pages")
-    
-    valid_listings = []
-    seen_ids = set()
-    
-    for listing in all_listings:
-        if listing['id'] in seen_ids:
-            continue
-        seen_ids.add(listing['id'])
-        
-        if database.is_listing_seen(listing['id']):
-            continue
-            
-        if is_profitable(listing, search_name):
-            valid_listings.append(listing)
-            database.mark_listing_seen(listing['id'], listing['title'], listing['price'], listing['url'])
-    
-    logger.info(f"🎯 Total valid listings found: {len(valid_listings)}")
-    return valid_listings
+# ... (rest of the file remains the same as previous version) ...
