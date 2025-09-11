@@ -10,8 +10,8 @@ AI_MODEL = "mistral:7b"
 
 # Scraping settings
 MAX_PAGES_TO_SCRAPE = 3
-REQUEST_DELAY = 3  # Increased delay
-SCRAPE_TIMEOUT = 30000
+REQUEST_DELAY = 5  # Increased delay for safety
+SCRAPE_TIMEOUT = 60000  # Increased to 60s to handle slow loads in Actions
 ENABLE_SCREENSHOTS = True  # Enable screenshot capture
 LOG_LEVEL = "DEBUG"  # DEBUG, INFO, WARNING, ERROR
 
