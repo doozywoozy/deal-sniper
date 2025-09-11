@@ -1,8 +1,9 @@
 # logger.py
 import logging
 import os
+import asyncio
 from datetime import datetime
-from config import LOG_FILE, LOG_LEVEL, SCREENSHOT_DIR
+from config import LOG_FILE, LOG_LEVEL, SCREENSHOT_DIR, ENABLE_SCREENSHOTS
 
 def setup_logger():
     """Setup logging configuration"""
@@ -38,16 +39,21 @@ def setup_logger():
 # Global logger instance
 logger = setup_logger()
 
-def log_detection(page, reason, search_url):
-    """Log detection event and capture screenshot"""
+async def log_detection(page, reason, search_url):
+    """Log detection event and capture screenshot (async version)"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     screenshot_path = os.path.join(SCREENSHOT_DIR, f"detection_{timestamp}.png")
     
     try:
-        if page:
-            page.screenshot(path=screenshot_path, full_page=True)
+        if page and ENABLE_SCREENSHOTS:
+            # Take screenshot asynchronously
+            await page.screenshot(path=screenshot_path, full_page=True)
             logger.warning(f"Bot detection: {reason}. Screenshot saved: {screenshot_path}")
         else:
             logger.warning(f"Bot detection: {reason}. URL: {search_url}")
     except Exception as e:
         logger.error(f"Failed to capture screenshot: {e}")
+
+def log_detection_sync(reason, search_url):
+    """Sync version for non-async contexts"""
+    logger.warning(f"Bot detection: {reason}. URL: {search_url}")
