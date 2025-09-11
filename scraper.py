@@ -1,9 +1,11 @@
 # scraper.py
 import asyncio
 import os
-from typing import List, Dict
-from playwright.async_api import async_playwright
-from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, ENABLE_SCREENSHOTS
+import re
+from typing import List, Dict, Optional
+from playwright.async_api import async_playwright, TimeoutError
+from bs4 import BeautifulSoup
+from config import MAX_PAGES_TO_SCRAPE, REQUEST_DELAY, ENABLE_SCREENSHOTS, SCRAPE_TIMEOUT
 from logger import logger, log_detection, log_detection_sync
 import database
 
@@ -32,211 +34,162 @@ async def handle_cookie_consent(page):
             'button[onclick*="accept"]',
             'button >> text=Godkänn',
             'button >> text=Acceptera',
-            'button >> text=Accept'
+            'button >> text=Tillåt'
         ]
         
-        # First check if any cookie dialog is visible
-        dialog_selectors = [
-            '[id*="cookie"]',
-            '[class*="cookie"]',
-            '[data-testid*="cookie"]',
-            '#cookieBanner',
-            '.cookie-consent',
-            '.cookie-banner',
-            '#cookieModal',
-            '.cookie-modal',
-            '#consentBanner',
-            '.consent-banner',
-            '#cybotcookie',
-            '.cc-banner'
-        ]
-        
-        cookie_dialog_found = False
-        for selector in dialog_selectors:
-            try:
-                dialog = await page.query_selector(selector)
-                if dialog:
-                    cookie_dialog_found = True
-                    logger.info(f"Found cookie dialog with selector: {selector}")
-                    break
-            except Exception:
-                continue
-        
-        if not cookie_dialog_found:
-            logger.info("No cookie dialog found with standard selectors")
-            # Try a more aggressive search for any overlay/banner
-            try:
-                overlays = await page.query_selector_all('div[class*="banner"], div[class*="modal"], div[class*="overlay"]')
-                for overlay in overlays:
-                    overlay_text = await overlay.text_content()
-                    if overlay_text and any(word in overlay_text.lower() for word in ['cookie', 'kakor', 'godkänn', 'acceptera']):
-                        cookie_dialog_found = True
-                        logger.info("Found potential cookie dialog in generic overlay")
-                        break
-            except Exception:
-                pass
-        
-        # Try to click accept buttons
-        accept_clicked = False
         for selector in allow_selectors:
             try:
-                # Wait a bit for the button to be clickable
-                allow_button = await page.wait_for_selector(selector, timeout=2000, state='visible')
-                if allow_button:
-                    # Scroll into view if needed
-                    await allow_button.scroll_into_view_if_needed()
-                    await allow_button.click()
-                    logger.info(f"✅ Clicked 'Allow All' with selector: {selector}")
-                    await page.wait_for_timeout(1500)  # Wait for dialog to close
-                    accept_clicked = True
-                    break
-            except Exception as e:
+                # Check if the button is visible and click it
+                button = page.locator(selector).first
+                if await button.is_visible(timeout=5000):
+                    logger.info(f"Found cookie button with selector: {selector}. Clicking...")
+                    await button.click()
+                    logger.info("✅ Cookie consent handled successfully!")
+                    # Wait for the dialog to disappear
+                    await page.wait_for_selector(selector, state="hidden", timeout=5000)
+                    return True
+            except TimeoutError:
+                # Ignore TimeoutError and try next selector
                 continue
-        
-        if not accept_clicked and cookie_dialog_found:
-            logger.warning("Cookie dialog found but couldn't click accept button")
-            # Try to find and click using JavaScript as fallback
-            try:
-                accept_result = await page.evaluate('''() => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const acceptButton = buttons.find(btn => 
-                        btn.textContent && (
-                            btn.textContent.includes('Godkänn') || 
-                            btn.textContent.includes('Acceptera') ||
-                            btn.textContent.includes('Accept') ||
-                            btn.textContent.includes('Allow')
-                        ) && !btn.textContent.includes('Hantera')
-                    );
-                    
-                    if (acceptButton) {
-                        acceptButton.click();
-                        return true;
-                    }
-                    return false;
-                }''')
+            except Exception as e:
+                logger.error(f"❌ Error clicking cookie button with selector {selector}: {e}")
+                continue
                 
-                if accept_result:
-                    logger.info("✅ Clicked accept button via JavaScript")
-                    await page.wait_for_timeout(1500)
-                    accept_clicked = True
-            except Exception as e:
-                logger.warning(f"JavaScript click failed: {e}")
-        
-        # Final fallback: press Escape to close any modal
-        if not accept_clicked and cookie_dialog_found:
-            try:
-                await page.keyboard.press('Escape')
-                logger.info("Pressed Escape to close dialog")
-                await page.wait_for_timeout(1000)
-            except Exception as e:
-                logger.warning(f"Escape press failed: {e}")
-        
-        return accept_clicked or not cookie_dialog_found
-        
     except Exception as e:
-        logger.warning(f"Error handling cookie consent: {e}")
-        return False
+        logger.error(f"❌ Error during cookie handling: {e}")
+        
+    logger.info("No cookie dialog found with standard selectors")
+    return False
+
+def extract_listing_data(html: str, search_name: str) -> List[Dict]:
+    """Extract listings from the raw HTML content using BeautifulSoup."""
+    soup = BeautifulSoup(html, 'html.parser')
+    listings = []
+    
+    # Selectors for Blocket listings
+    listing_elements = soup.find_all('article', class_='jHwEw _3xR6n _3B7oP')
+    
+    for element in listing_elements:
+        try:
+            url_element = element.find('a', class_='c7f-j')
+            url = f"https://www.blocket.se{url_element['href']}" if url_element and 'href' in url_element.attrs else None
+            
+            # Skip if URL is a Blocket Pro ad
+            if url and 'blocket.se/foretag/' in url:
+                continue
+
+            # Generate a unique ID from the URL
+            if url:
+                listing_id_match = re.search(r'/(?:vi|id)/(\d+)', url)
+                listing_id = listing_id_match.group(1) if listing_id_match else None
+                if not listing_id:
+                    continue
+            else:
+                continue
+            
+            # Check if listing is already seen
+            if database.is_listing_seen(listing_id):
+                continue
+                
+            title_element = element.find('h2', class_='_3J23- _1gS_A')
+            title = title_element.text.strip() if title_element else 'No Title'
+            
+            price_element = element.find('p', class_='_1g50y')
+            price_text = price_element.text.strip() if price_element else '0 kr'
+            price = int(''.join(filter(str.isdigit, price_text))) if price_text != 'Gratis' else 0
+            
+            location_element = element.find('p', class_='_1-w_s _1YvB8')
+            location = location_element.text.strip() if location_element else 'Unknown Location'
+            
+            # Extract image URL from the img tag's src or data-src
+            image_element = element.find('img')
+            image_url = None
+            if image_element:
+                image_url = image_element.get('src') or image_element.get('data-src')
+
+            # Build the listing dictionary
+            listing = {
+                'id': listing_id,
+                'title': title,
+                'price': price,
+                'url': url,
+                'location': location,
+                'image': image_url,
+                'source': 'Blocket',
+                'query': search_name,
+            }
+            
+            listings.append(listing)
+            database.mark_listing_seen(listing_id, title, price, url, 'Blocket')
+            
+        except Exception as e:
+            logger.error(f"Error parsing a listing: {e}")
+            continue
+            
+    return listings
 
 async def scrape_blocket_fast(search_url: str, search_name: str) -> List[Dict]:
-    """Fast scraping using Playwright with pagination"""
-    all_listings = []
+    """Scrape listings from Blocket without using advanced bot detection bypass"""
     browser = None
+    all_listings = []
     
     try:
-        browser = await async_playwright().start()
-        # Launch browser with more natural settings
-        browser_instance = await browser.chromium.launch(
-            headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-            ]
-        )
-        
-        context = await browser_instance.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1366, 'height': 768},
-            locale='sv-SE',
-            timezone_id='Europe/Stockholm',
-        )
-        
-        # Less aggressive stealth to avoid detection
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """)
-        
-        page = await context.new_page()
-        
-        for page_num in range(1, MAX_PAGES_TO_SCRAPE + 1):
-            # Build URL with pagination
-            if "?" in search_url:
-                paginated_url = f"{search_url}&page={page_num}"
-            else:
-                paginated_url = f"{search_url}?page={page_num}"
-            
-            logger.info(f"📄 Page {page_num}: {paginated_url}")
-            
-            try:
-                # Navigate with more natural timing
-                await page.goto(paginated_url, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(2)
-                
-                # Handle cookie consent with multiple attempts
-                cookie_handled = False
-                for attempt in range(2):  # Try twice
-                    cookie_handled = await handle_cookie_consent(page)
-                    if cookie_handled:
-                        break
-                    await asyncio.sleep(1)
-                
-                if not cookie_handled:
-                    logger.warning("Cookie consent not handled, taking screenshot for debugging")
-                    if ENABLE_SCREENSHOTS:
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        screenshot_path = os.path.join("screenshots", f"cookie_issue_{timestamp}.png")
-                        await page.screenshot(path=screenshot_path, full_page=True)
-                        logger.info(f"Cookie issue screenshot saved: {screenshot_path}")
-                
-                # Check page content
-                page_text = await page.evaluate('''() => document.body.textContent''')
-                
-                # Try scraping
-                listings = await try_scraping_approaches(page)
-                logger.info(f"Found {len(listings)} articles on page {page_num}")
-                
-                if not listings:
-                    if "inga annonser" in page_text.lower() or "no results" in page_text.lower():
-                        logger.info("Genuine no results page")
-                    else:
-                        logger.warning("No listings found - taking debug screenshot")
-                        if ENABLE_SCREENSHOTS:
-                            from datetime import datetime
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
-                            await page.screenshot(path=screenshot_path, full_page=True)
-                            logger.info(f"No listings screenshot saved: {screenshot_path}")
-                    break
-                
-                all_listings.extend(listings)
-                
-                # Add delay between pages
-                if page_num < MAX_PAGES_TO_SCRAPE:
-                    await asyncio.sleep(REQUEST_DELAY)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            )
+            page = await context.new_page()
+
+            for page_num in range(1, MAX_PAGES_TO_SCRAPE + 1):
+                url_to_scrape = f"{search_url}&page={page_num}"
+                logger.info(f"📄 Page {page_num}: {url_to_scrape}")
+
+                try:
+                    await page.goto(url_to_scrape, timeout=SCRAPE_TIMEOUT)
                     
-            except Exception as e:
-                logger.error(f"Error on page {page_num}: {e}")
-                await log_detection(page, f"Error: {str(e)}", search_url)
-                break
-                
+                    # Wait for a known element to indicate the page is loaded
+                    await page.wait_for_selector('article.jHwEw', timeout=SCRAPE_TIMEOUT)
+                    
+                    # Handle cookie consent
+                    await handle_cookie_consent(page)
+                    
+                    # Get the page content after handling cookies
+                    html_content = await page.content()
+                    
+                    listings = extract_listing_data(html_content, search_name)
+                    
+                    if not listings:
+                        logger.warning(f"No listings found on page {page_num}")
+                        page_text = await page.inner_text('body')
+                        if "inga träffar" in page_text.lower() or "no listings" in page_text.lower():
+                            logger.info("Genuine no results page")
+                        else:
+                            logger.warning("No listings found - taking debug screenshot")
+                            if ENABLE_SCREENSHOTS:
+                                from datetime import datetime
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                screenshot_path = os.path.join("screenshots", f"no_listings_{timestamp}.png")
+                                await page.screenshot(path=screenshot_path, full_page=True)
+                                logger.info(f"No listings screenshot saved: {screenshot_path}")
+                        break
+                    
+                    all_listings.extend(listings)
+                    
+                    # Add delay between pages
+                    if page_num < MAX_PAGES_TO_SCRAPE:
+                        await asyncio.sleep(REQUEST_DELAY)
+                        
+                except Exception as e:
+                    logger.error(f"Error on page {page_num}: {e}")
+                    await log_detection(page, f"Error: {str(e)}", search_url)
+                    break
+                    
     except Exception as e:
         logger.error(f"Error during browser setup: {e}")
         log_detection_sync(f"Browser error: {str(e)}", search_url)
     finally:
         if browser:
-            await browser.stop()
+            await browser.close()
     
     return all_listings
-
-# ... (rest of the file remains the same as previous version) ...
