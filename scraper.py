@@ -23,21 +23,20 @@ async def handle_cookie_consent(page):
     try:
         logger.info("Looking for cookie consent dialog...")
 
-        # Check if popup is present using JavaScript
-        popup_visible = await page.evaluate("document.querySelector('.cookie-consent') !== null")
-        if popup_visible:
-            accept_button = page.locator('button:has-text("Godkänn alla")')
-            await accept_button.wait_for(state="visible", timeout=60000)
-            await accept_button.click()
-            logger.info("✅ Successfully clicked 'Godkänn alla' button!")
-            await page.wait_for_timeout(2000)  # Wait for popup to disappear
-        else:
-            logger.info("No cookie consent popup detected.")
+        # Check if popup is present by looking for the title text "Cookieinställningar"
+        popup_title_locator = page.locator('text=Cookieinställningar')
+        await popup_title_locator.wait_for(state="visible", timeout=10000)  # Short timeout to check presence
+
+        # If found, click the accept button
+        accept_button = page.locator('button:has-text("Godkänn alla")')
+        await accept_button.wait_for(state="visible", timeout=60000)
+        await accept_button.click()
+        logger.info("✅ Successfully clicked 'Godkänn alla' button!")
+        await page.wait_for_timeout(2000)  # Wait for popup to disappear
 
     except TimeoutError as te:
-        logger.warning(f"Cookie button not found after timeout: {te}. Attempting to proceed without dismissing.")
-        # Check if page is still interactive
-        await page.evaluate("() => window.scrollBy(0, 100)")  # Try a scroll to trigger load
+        logger.info("No cookie consent popup detected or timed out waiting for title/button.")
+        # Proceed without dismissing
     except Exception as e:
         logger.warning(f"Could not handle cookie popup: {e}. Proceeding with potential overlay.")
 
