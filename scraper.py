@@ -23,11 +23,11 @@ async def handle_cookie_consent(page):
     try:
         logger.info("Looking for cookie consent dialog...")
 
-        # Check if popup is present by looking for the title text "Cookieinställningar"
+        # Increase timeout to detect popup title
         popup_title_locator = page.locator('text=Cookieinställningar')
-        await popup_title_locator.wait_for(state="visible", timeout=10000)  # Short timeout to check presence
+        await popup_title_locator.wait_for(state="visible", timeout=30000)  # 30s timeout
 
-        # If found, click the accept button
+        # If title is found, look for and click the accept button
         accept_button = page.locator('button:has-text("Godkänn alla")')
         await accept_button.wait_for(state="visible", timeout=60000)
         await accept_button.click()
@@ -35,8 +35,15 @@ async def handle_cookie_consent(page):
         await page.wait_for_timeout(2000)  # Wait for popup to disappear
 
     except TimeoutError as te:
-        logger.info("No cookie consent popup detected or timed out waiting for title/button.")
-        # Proceed without dismissing
+        logger.warning(f"Cookie popup title or button not found after timeout: {te}. Checking for manual dismissal.")
+        # Try to detect popup container and force dismissal via JavaScript
+        popup_container = await page.query_selector('.cookie-consent, .consent-modal')
+        if popup_container:
+            await page.evaluate("document.querySelector('button:has-text(\"Godkänn alla\")').click()")
+            logger.info("Forced click on 'Godkänn alla' via JavaScript.")
+            await page.wait_for_timeout(2000)
+        else:
+            logger.info("No cookie consent popup detected after checks.")
     except Exception as e:
         logger.warning(f"Could not handle cookie popup: {e}. Proceeding with potential overlay.")
 
@@ -84,13 +91,20 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     # Wait for listings container with a retry mechanism
                     for attempt in range(3):
                         try:
+                            # Wait for popup to be gone or page to be interactive
+                            await page.wait_for_function("!document.querySelector('.cookie-consent, .consent-modal')", timeout=60000)
                             await page.wait_for_selector('div[data-testid="result-list"]', timeout=60000)
                             logger.info("Listings container found.")
                             break
                         except TimeoutError:
-                            logger.warning(f"Attempt {attempt + 1} failed to find listings container. Retrying...")
+                            logger.warning(f"Attempt {attempt + 1} failed to find listings container or popup still present. Retrying...")
                             await page.reload()
                             await handle_cookie_consent(page)
+                            if attempt == 2:
+                                # Fallback to a broader selector if primary fails
+                                await page.wait_for_selector('.styled__StyledArticle-sc-1l2koxx-0', timeout=60000)
+                                logger.info("Fell back to alternative listings selector.")
+                                break
                             if attempt == 2:
                                 raise TimeoutError("Failed to find listings container after retries.")
 
