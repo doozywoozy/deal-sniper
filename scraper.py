@@ -19,26 +19,27 @@ from logger import log_detection, log_detection_sync, logger
 
 
 async def handle_cookie_consent(page):
-    """Handle cookie consent popup by clicking 'Godkänn alla'."""
+    """Handle cookie consent popup by clicking 'Godkänn alla' or bypassing if not found."""
     try:
         logger.info("Looking for cookie consent dialog...")
 
-        # More robust selector using has-text for visible text matching
-        accept_button = page.locator('button:has-text("Godkänn alla")')
-
-        # Increased timeout to 60s for slow loads
-        await accept_button.wait_for(state="visible", timeout=60000)
-        await accept_button.click()
-
-        logger.info("✅ Successfully clicked 'Godkänn alla' button!")
-
-        # Wait for the dialog to disappear
-        await page.wait_for_timeout(2000)
+        # Check if popup is present using JavaScript
+        popup_visible = await page.evaluate("document.querySelector('.cookie-consent') !== null")
+        if popup_visible:
+            accept_button = page.locator('button:has-text("Godkänn alla")')
+            await accept_button.wait_for(state="visible", timeout=60000)
+            await accept_button.click()
+            logger.info("✅ Successfully clicked 'Godkänn alla' button!")
+            await page.wait_for_timeout(2000)  # Wait for popup to disappear
+        else:
+            logger.info("No cookie consent popup detected.")
 
     except TimeoutError as te:
-        logger.warning(f"Cookie button not found after timeout: {te}. Proceeding without click—popup may not be present.")
+        logger.warning(f"Cookie button not found after timeout: {te}. Attempting to proceed without dismissing.")
+        # Check if page is still interactive
+        await page.evaluate("() => window.scrollBy(0, 100)")  # Try a scroll to trigger load
     except Exception as e:
-        logger.warning(f"Could not find or click cookie button, hopefully it's not needed. Error: {e}")
+        logger.warning(f"Could not handle cookie popup: {e}. Proceeding with potential overlay.")
 
 
 async def scrape_blocket(search: Dict) -> List[Dict]:
@@ -81,8 +82,18 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     await page.wait_for_timeout(random.randint(2000, 5000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Wait for listings container to confirm load (more reliable than search input)
-                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=SCRAPE_TIMEOUT)
+                    # Wait for listings container with a retry mechanism
+                    for attempt in range(3):
+                        try:
+                            await page.wait_for_selector('div[data-testid="result-list"]', timeout=60000)
+                            logger.info("Listings container found.")
+                            break
+                        except TimeoutError:
+                            logger.warning(f"Attempt {attempt + 1} failed to find listings container. Retrying...")
+                            await page.reload()
+                            await handle_cookie_consent(page)
+                            if attempt == 2:
+                                raise TimeoutError("Failed to find listings container after retries.")
 
                     # Extract listings
                     listings = await extract_listings(page, search)
