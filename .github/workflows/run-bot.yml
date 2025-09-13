@@ -48,6 +48,7 @@ jobs:
     - name: Run the bot
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        PROXY_LIST: ${{ secrets.PROXY_LIST }}  # Add a comma-separated list of proxies (e.g., http://user:pass@proxy1:port,http://user:pass@proxy2:port)
       run: |
         echo "🚀 Starting Deal Sniper Bot..."
         python main.py
