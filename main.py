@@ -54,6 +54,8 @@ async def send_discord_message(listing: Dict, search_name: str, deal_type: str, 
                             logger.error(f"Failed to send message after retry: {retry_response.status}")
                         else:
                             logger.info("✅ Discord message sent after retry!")
+                elif response.status == 204:
+                    logger.warning("Received 204 No Content from Discord. Payload might be empty or malformed.")
                 elif response.status != 200:
                     logger.error(f"Failed to send message: {response.status}")
                 else:
@@ -71,10 +73,15 @@ def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
             return search['name']
     return "Unknown Search"
 
-def evaluate_deal(listing: Dict, cost_price: float) -> tuple:
+def evaluate_deal(listing: Dict, base_cost: float) -> tuple:
     """Evaluate if a listing is a good or hot deal and calculate profit."""
-    profit_sek = listing['price'] - cost_price
-    profit_pct = (profit_sek / cost_price) * 100 if cost_price > 0 else 0
+    if not base_cost or base_cost <= 0:
+        logger.warning(f"Invalid base cost for listing {listing['title']}. Using price as fallback.")
+        base_cost = listing['price'] * 0.5  # Fallback to 50% of price if no better data
+    
+    profit_sek = listing['price'] - base_cost
+    profit_pct = (profit_sek / base_cost) * 100 if base_cost > 0 else 0
+    
     if profit_sek <= 0:
         return "Bad Deal", profit_sek, profit_pct
     elif profit_pct >= 50:
@@ -87,11 +94,11 @@ async def main():
     """Main function to run the scraping and analysis process."""
     logger.info("🚀 Starting scraping process...")
     
-    # Example searches (you can customize these)
+    # Example searches with base costs (customize these based on your data)
     searches = [
-        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000},
-        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000},
-        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000}
+        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000, "base_cost": 4000},
+        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000, "base_cost": 5000},
+        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000, "base_cost": 2500}
     ]
     
     # Initialize database
@@ -116,11 +123,12 @@ async def main():
     if all_new_listings:
         logger.info(f"Found {len(all_new_listings)} new listings.")
         
-        # Filter and evaluate deals (assuming cost_price is 70% of listing price as an example)
+        # Filter and evaluate deals using search-specific base costs
         for listing in all_new_listings:
             search_name = get_search_name_for_listing(listing, searches)
-            cost_price = listing['price'] * 0.7  # Adjust this logic based on your cost model
-            deal_type, profit_sek, profit_pct = evaluate_deal(listing, cost_price)
+            search = next((s for s in searches if s['name'] == search_name), searches[0])  # Default to first search if not found
+            base_cost = search.get('base_cost', listing['price'] * 0.5)  # Use search base_cost or fallback
+            deal_type, profit_sek, profit_pct = evaluate_deal(listing, base_cost)
             
             # Only send if it's a Good or Hot deal
             if deal_type in ["Good Deal", "Hot Deal"]:
