@@ -75,7 +75,7 @@ async def handle_cookie_consent(page):
 
 
 async def scrape_blocket(search: Dict) -> List[Dict]:
-    """Scrape listings with no strict timeouts and robust popup handling."""
+    """Scrape listings using BS4 on page content after handling popup."""
     all_listings = []
     browser = None
     proxy = os.getenv('PROXY_URL')
@@ -99,7 +99,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
             page = await context.new_page()
             await stealth_async(page)
 
-            # Remove strict timeouts: set to 0 (infinite)
+            # No strict timeouts
             page.set_default_timeout(0)
 
             logger.info(f"\n⚡ Scanning blocket for {search['name']} (proxy: {bool(proxy)})")
@@ -117,23 +117,16 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     await page.wait_for_timeout(random.randint(3000, 6000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Attempt to detect listings; no timeout
-                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=30000)  # Soft timeout for logging
-                    logger.info("Listings container detected.")
-
-                    listings = await extract_listings(page, search)
-                    if not listings:
-                        logger.warning("No listings from Playwright. Using BS4 fallback.")
-                        content = await page.content()
-                        listings = fallback_extract_listings(content, search)
+                    # Get page content and parse with BS4 directly
+                    content = await page.content()
+                    listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
 
-                    page_text = await page.content()
-                    if "inga resultat" in page_text.lower() or "inga annonser hittades" in page_text.lower():
+                    if "inga resultat" in content.lower() or "inga annonser hittades" in content.lower():
                         logger.info("No results detected.")
                         break
                     if not listings and page_num == 1:
-                        logger.warning("No listings. Capturing screenshot.")
+                        logger.warning("No listings extracted. Capturing screenshot.")
                         if ENABLE_SCREENSHOTS:
                             from datetime import datetime
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -160,65 +153,64 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
     return all_listings
 
 
-async def extract_listings(page, search: Dict) -> List[Dict]:
-    """Extract using Playwright."""
-    listings = []
-    try:
-        elements = await page.locator('div[data-testid="result-list"] article').all() or await page.locator('.styled__StyledArticle-sc-1l2koxx-0').all()
-
-        for elem in elements:
-            try:
-                title = await elem.locator("h3").inner_text() or "No title"
-                url = f"https://www.blocket.se{await elem.locator('a').get_attribute('href')}" or "No URL"
-                price_text = await elem.locator('span:text-is("SEK")').inner_text() or "0"
-                price = int(re.sub(r"[^\d]", "", price_text))
-                location = (await elem.locator('span:has-text("Kommun")').inner_text() or "No location").replace("Kommun", "").strip()
-
-                listing_id = re.search(r"annons/(\d+)", url).group(1) if re.search(r"annons/(\d+)", url) else None
-
-                if listing_id and not database.is_listing_seen(listing_id):
-                    listing = {"id": listing_id, "title": title, "price": price, "url": url, "location": location, "source": "blocket", "query": search["name"]}
-                    listings.append(listing)
-                    database.mark_listing_seen(listing_id, title, price, url, "blocket")
-
-            except Exception as e:
-                logger.error(f"Extraction error: {e}")
-
-    except Exception as e:
-        logger.error(f"Playwright failed: {e}")
-
-    return listings
-
-
 def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
-    """BS4 fallback."""
+    """Extract listings using BeautifulSoup with robust selectors."""
     listings = []
     try:
         soup = BeautifulSoup(content, 'html.parser')
-        articles = soup.select('div[data-testid="result-list"] article') or soup.select('.styled__StyledArticle-sc-1l2koxx-0')
 
-        for article in articles:
+        # Use broad selector for listing articles
+        article_elements = soup.select('article[class*="styled__StyledArticle"]') or soup.select('article')
+
+        for article in article_elements:
             try:
-                title = article.find('h3').get_text(strip=True) if article.find('h3') else "No title"
-                a_tag = article.find('a')
-                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
-                price_span = article.find('span', string=re.compile(r'SEK'))
-                price_text = price_span.get_text() if price_span else "0"
-                price = int(re.sub(r"[^\d]", "", price_text))
-                location_span = article.find('span', string=re.compile(r'Kommun'))
-                location = location_span.get_text().replace("Kommun", "").strip() if location_span else "No location"
+                # Title
+                title_tag = article.find('h3')
+                title = title_tag.get_text(strip=True) if title_tag else "No title"
 
-                listing_id = re.search(r"annons/(\d+)", url).group(1) if re.search(r"annons/(\d+)", url) else None
+                # URL
+                a_tag = article.find('a')
+                url = f"https://www.blocket.se{a_tag['href']}" if a_tag and 'href' in a_tag.attrs else "No URL"
+
+                # Price
+                price_span = article.find('span', string=re.compile(r'\d+\s*kr'))
+                price_text = price_span.get_text(strip=True) if price_span else "0"
+                price = int(re.sub(r"[^\d]", "", price_text))
+
+                # Location (look for span containing location info)
+                location_span = article.find('span', class_=re.compile(r'location|kommun', re.I))
+                location = location_span.get_text(strip=True).replace("Kommun", "").strip() if location_span else "No location"
+
+                # ID from URL
+                listing_id_match = re.search(r"annons/(\d+)", url)
+                listing_id = listing_id_match.group(1) if listing_id_match else None
 
                 if listing_id and not database.is_listing_seen(listing_id):
-                    listing = {"id": listing_id, "title": title, "price": price, "url": url, "location": location, "source": "blocket", "query": search["name"]}
+                    listing = {
+                        "id": listing_id,
+                        "title": title,
+                        "price": price,
+                        "url": url,
+                        "location": location,
+                        "source": "blocket",
+                        "query": search["name"],
+                    }
                     listings.append(listing)
-                    database.mark_listing_seen(listing_id, title, price, url, "blocket")
+                    database.mark_listing_seen(
+                        listing["id"],
+                        listing["title"],
+                        listing["price"],
+                        listing["url"],
+                        listing["source"],
+                    )
 
             except Exception as e:
-                logger.error(f"Fallback error: {e}")
+                logger.error(f"Listing extraction error: {e}")
+                continue
+
+        logger.info(f"Extracted {len(listings)} listings via BS4.")
 
     except Exception as e:
-        logger.error(f"Fallback failed: {e}")
+        logger.error(f"BS4 extraction failed: {e}")
 
     return listings
