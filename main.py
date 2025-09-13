@@ -2,7 +2,7 @@
 import asyncio
 import os
 import json
-import requests
+import aiohttp
 from typing import List, Dict
 from logger import logger, setup_logger, log_github_actions_info
 import scraper
@@ -40,20 +40,18 @@ async def send_discord_message(listing: Dict, search_name: str):
             
         payload = {"embeds": [embed]}
         
-        async with requests.Session() as session:
-            response = await asyncio.to_thread(session.post, DISCORD_WEBHOOK_URL, json=payload)
-            response.raise_for_status()
-            logger.info("✅ Discord message sent!")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(DISCORD_WEBHOOK_URL, json=payload) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to send message: {response.status}")
+                else:
+                    logger.info("✅ Discord message sent!")
             
-    except requests.exceptions.HTTPError as errh:
-        logger.error(f"Http Error: {errh}")
-    except requests.exceptions.ConnectionError as errc:
-        logger.error(f"Error Connecting: {errc}")
-    except requests.exceptions.Timeout as errt:
-        logger.error(f"Timeout Error: {errt}")
-    except requests.exceptions.RequestException as err:
-        logger.error(f"OOps: Something Else {err}")
-        
+    except aiohttp.ClientError as err:
+        logger.error(f"Network error occurred: {err}")
+    except Exception as err:
+        logger.error(f"Unexpected error: {err}")
+
 def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
     """Find the search name for a given listing based on its query."""
     for search in searches:
