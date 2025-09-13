@@ -45,6 +45,7 @@ async def send_discord_message(listing: Dict, search_name: str, deal_type: str, 
         
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as response:
+                response_text = await response.text()  # Debug payload issue
                 if response.status == 429:
                     retry_after = int(response.headers.get("Retry-After", 5))
                     logger.warning(f"Rate limited (429). Waiting {retry_after} seconds...")
@@ -55,9 +56,9 @@ async def send_discord_message(listing: Dict, search_name: str, deal_type: str, 
                         else:
                             logger.info("✅ Discord message sent after retry!")
                 elif response.status == 204:
-                    logger.warning("Received 204 No Content from Discord. Payload might be empty or malformed.")
+                    logger.error(f"Received 204 No Content from Discord. Payload: {json.dumps(payload)}")
                 elif response.status != 200:
-                    logger.error(f"Failed to send message: {response.status}")
+                    logger.error(f"Failed to send message: {response.status} - Response: {response_text}")
                 else:
                     logger.info("✅ Discord message sent!")
             
@@ -73,20 +74,20 @@ def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
             return search['name']
     return "Unknown Search"
 
-def evaluate_deal(listing: Dict, base_cost: float) -> tuple:
-    """Evaluate if a listing is a good or hot deal and calculate profit."""
-    if not base_cost or base_cost <= 0:
-        logger.warning(f"Invalid base cost for listing {listing['title']}. Using price as fallback.")
-        base_cost = listing['price'] * 0.5  # Fallback to 50% of price if no better data
+def evaluate_deal(listing: Dict, market_price: float) -> tuple:
+    """Evaluate if a listing is a good or hot deal and calculate profit for used computers."""
+    if not market_price or market_price <= 0:
+        logger.warning(f"No valid market price for {listing['title']}. Using 50% of price as fallback.")
+        market_price = listing['price'] * 0.5  # Fallback for used items below market
     
-    profit_sek = listing['price'] - base_cost
-    profit_pct = (profit_sek / base_cost) * 100 if base_cost > 0 else 0
+    profit_sek = listing['price'] - market_price
+    profit_pct = (profit_sek / market_price) * 100 if market_price > 0 else 0
     
     if profit_sek <= 0:
         return "Bad Deal", profit_sek, profit_pct
-    elif profit_pct >= 50:
+    elif profit_pct >= 30:  # Adjusted for used market, lower threshold
         return "Hot Deal", profit_sek, profit_pct
-    elif profit_pct >= 20:
+    elif profit_pct >= 10:  # Lowered for used items
         return "Good Deal", profit_sek, profit_pct
     return "Bad Deal", profit_sek, profit_pct
 
@@ -94,11 +95,11 @@ async def main():
     """Main function to run the scraping and analysis process."""
     logger.info("🚀 Starting scraping process...")
     
-    # Example searches with base costs (customize these based on your data)
+    # Example searches with approximate market prices for used computers
     searches = [
-        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000, "base_cost": 4000},
-        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000, "base_cost": 5000},
-        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000, "base_cost": 2500}
+        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000, "market_price": 6000},
+        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000, "market_price": 7000},
+        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000, "market_price": 3500}
     ]
     
     # Initialize database
@@ -108,32 +109,32 @@ async def main():
     
     # Process each search
     for search in searches:
-        # Pass the full search dictionary to the scraper function
         new_listings = await scraper.scrape_blocket(search)
-        
         if new_listings:
             all_new_listings.extend(new_listings)
-            
         logger.info(f"Found {len(new_listings)} new listings on blocket for {search['name']}")
     
     logger.info(f"\n🚀 Total scan completed")
     logger.info(f"📊 Total new listings found: {len(all_new_listings)}")
     
-    # Process new listings
+    # Process and evaluate all listings
     if all_new_listings:
         logger.info(f"Found {len(all_new_listings)} new listings.")
         
-        # Filter and evaluate deals using search-specific base costs
         for listing in all_new_listings:
             search_name = get_search_name_for_listing(listing, searches)
-            search = next((s for s in searches if s['name'] == search_name), searches[0])  # Default to first search if not found
-            base_cost = search.get('base_cost', listing['price'] * 0.5)  # Use search base_cost or fallback
-            deal_type, profit_sek, profit_pct = evaluate_deal(listing, base_cost)
+            search = next((s for s in searches if s['name'] == search_name), searches[0])
+            market_price = search.get('market_price', listing['price'] * 0.5)  # Use market price or fallback
+            deal_type, profit_sek, profit_pct = evaluate_deal(listing, market_price)
             
-            # Only send if it's a Good or Hot deal
+            # Log all listings for verification
+            logger.info(f"Listing: {listing['title']} | Price: {listing['price']} SEK | Market Price: {market_price} SEK | "
+                       f"Profit: {profit_sek:.2f} SEK ({profit_pct:.2f}%) | Deal: {deal_type}")
+            
+            # Only send Good or Hot deals to Discord
             if deal_type in ["Good Deal", "Hot Deal"]:
                 await send_discord_message(listing, search_name, deal_type, profit_sek, profit_pct)
-                await asyncio.sleep(2)  # Increased delay to avoid rate limiting
+                await asyncio.sleep(2)  # Delay to avoid rate limiting
     else:
         logger.info("No new listings to analyze. Exiting.")
     
