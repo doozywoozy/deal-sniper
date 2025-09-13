@@ -107,23 +107,28 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                 logger.info(f"📄 Page {page_num}: {search_url}")
 
                 try:
-                    await page.goto(search_url, wait_until="domcontentloaded")  # Changed to domcontentloaded for faster load
+                    await page.goto(search_url, wait_until="domcontentloaded")
 
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
                     # Wait for listing elements to load with increased timeout and fallback
                     try:
-                        await page.wait_for_selector('div.item-row', state='visible', timeout=30000)  # Increased to 30 seconds
+                        await page.wait_for_selector('div.item_row', state='visible', timeout=45000)  # Adjusted to 'item_row' based on HTML
                         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         await page.wait_for_timeout(random.randint(5000, 15000))
                         await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
                     except Exception as e:
                         logger.warning(f"Selector wait failed: {e}. Capturing content anyway.")
-                        await page.wait_for_timeout(5000)  # Additional wait to capture partial content
+                        await page.wait_for_timeout(10000)  # Increased to 10 seconds
 
-                    # Get page content after ensuring some load
+                    # Get page content and check for error messages
                     content = await page.content()
+                    if "something went wrong" in content.lower() or "try again" in content.lower():
+                        logger.error("Detected 'something went wrong, try again' message.")
+                        await log_detection(page, "Error page detected", search_url)
+                        break
+
                     listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
 
@@ -167,16 +172,16 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
     try:
         soup = BeautifulSoup(content, 'html.parser')
 
-        # Target listing containers (adjust class names based on inspection of debug_content.html)
-        potential_listings = soup.find_all('div', class_=re.compile(r'item-row|listing|card', re.I))
+        # Target listing containers based on Blocket's structure
+        potential_listings = soup.find_all('div', class_=re.compile(r'item_row|listing|card', re.I))
 
         for item in potential_listings:
             try:
                 # Title: Look for any text block or nested span/div with significant content
                 title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'p', 'span', 'div'], 
-                                    string=re.compile(r'.{5,}', re.I))  # Reduced to 5 chars for flexibility
+                                    string=re.compile(r'.{5,}', re.I))
                 if not title_tag:
-                    title_tag = item.find('a')  # Fallback to anchor text if no heading
+                    title_tag = item.find('a')
                 if not title_tag:
                     continue
                 title = title_tag.get_text(strip=True)
@@ -198,7 +203,7 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
                 listing_id_match = re.search(r"ad/(\d+)", url)
                 listing_id = listing_id_match.group(1) if listing_id_match else None
 
-                if listing_id and not database.is_listing_seen(listing_id):
+                if listing_id and not database.is_listing_seen(listing_id) and price <= search.get('price_end', float('inf')):
                     listing = {
                         "id": listing_id,
                         "title": title,
