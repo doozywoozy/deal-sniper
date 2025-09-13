@@ -26,7 +26,7 @@ async def handle_cookie_consent(page):
 
         try:
             accept_button = page.locator('button:has-text("Godkänn alla")')
-            await accept_button.wait_for(state="visible", timeout=10000)
+            await accept_button.wait_for(state="visible", timeout=15000)
             await accept_button.click()
             logger.info("✅ Clicked 'Godkänn alla' button!")
             await page.wait_for_timeout(3000)
@@ -72,23 +72,27 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
     """Scrape listings using BS4 after simulating human interaction."""
     all_listings = []
     browser = None
-    proxy = os.getenv('PROXY_URL')
+    proxy_list = os.getenv('PROXY_LIST', '').split(',') if os.getenv('PROXY_LIST') else []
 
     try:
         async with async_playwright() as p:
             launch_args = {}
-            if proxy:
-                launch_args['proxy'] = {'server': proxy}
+            if proxy_list:
+                proxy = random.choice(proxy_list) if proxy_list else None
+                if proxy:
+                    launch_args['proxy'] = {'server': proxy}
             browser = await p.chromium.launch(headless=True, **launch_args)
             context = await browser.new_context(
                 user_agent=random.choice([
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
                 ]),
                 viewport={"width": 1920, "height": 1080},
                 ignore_https_errors=True,
                 bypass_csp=True,
                 locale="sv-SE",
+                extra_http_headers={"Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8"},
             )
             page = await context.new_page()
             await stealth_async(page)
@@ -96,25 +100,29 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
             # No timeouts
             page.set_default_timeout(0)
 
-            logger.info(f"\n⚡ Scanning blocket for {search['name']} (proxy: {bool(proxy)})")
+            logger.info(f"\n⚡ Scanning blocket for {search['name']} (proxy: {bool(proxy_list)})")
 
             for page_num in range(1, MAX_PAGES_TO_SCRAPE + 1):
                 search_url = f"https://www.blocket.se/annonser/hela_sverige?q={search['query']}&price_end={search['price_end']}&page={page_num}"
                 logger.info(f"📄 Page {page_num}: {search_url}")
 
                 try:
-                    await page.goto(search_url, wait_until="networkidle")
+                    await page.goto(search_url, wait_until="domcontentloaded")  # Changed to domcontentloaded for faster load
 
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Wait for listing elements to load (adjust class name based on inspection)
-                    await page.wait_for_selector('div.item-row', state='visible', timeout=10000)  # Updated to 'item-row' as a common Blocket class
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await page.wait_for_timeout(random.randint(5000, 10000))
-                    await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
+                    # Wait for listing elements to load with increased timeout and fallback
+                    try:
+                        await page.wait_for_selector('div.item-row', state='visible', timeout=30000)  # Increased to 30 seconds
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await page.wait_for_timeout(random.randint(5000, 15000))
+                        await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
+                    except Exception as e:
+                        logger.warning(f"Selector wait failed: {e}. Capturing content anyway.")
+                        await page.wait_for_timeout(5000)  # Additional wait to capture partial content
 
-                    # Get page content after ensuring listings are loaded
+                    # Get page content after ensuring some load
                     content = await page.content()
                     listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
@@ -160,7 +168,7 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
         soup = BeautifulSoup(content, 'html.parser')
 
         # Target listing containers (adjust class names based on inspection of debug_content.html)
-        potential_listings = soup.find_all('div', class_=re.compile(r'item-row|listing|card', re.I))  # Updated to include 'item-row'
+        potential_listings = soup.find_all('div', class_=re.compile(r'item-row|listing|card', re.I))
 
         for item in potential_listings:
             try:
