@@ -114,7 +114,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
                     # Wait for listing elements to load with increased timeout and fallback
                     try:
-                        await page.wait_for_selector('div.item_row', state='visible', timeout=45000)  # Adjusted to 'item_row' based on HTML
+                        await page.wait_for_selector('div.listing-item', state='visible', timeout=45000)  # Adjusted to 'listing-item' based on likely structure
                         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         await page.wait_for_timeout(random.randint(5000, 15000))
                         await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
@@ -173,7 +173,9 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
         soup = BeautifulSoup(content, 'html.parser')
 
         # Target listing containers based on Blocket's structure
-        potential_listings = soup.find_all('div', class_=re.compile(r'item_row|listing|card', re.I))
+        potential_listings = soup.find_all('div', class_=re.compile(r'listing-item|item|card', re.I))  # Adjusted to 'listing-item' as a likely class
+
+        logger.debug(f"Found {len(potential_listings)} potential listing containers.")  # Debug log
 
         for item in potential_listings:
             try:
@@ -196,7 +198,7 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
                 price = int(re.sub(r'[^\d]', '', price_text.replace(' ', '')))
 
                 # Location: Broader regex for locations
-                location_tag = item.find(string=re.compile(r'[A-Z][a-z]+(?:\s*-\s*[A-Z][a-z]+)?', re.I))
+                location_tag = item.find_parent(string=re.compile(r'[A-Z][a-z]+(?:\s*-\s*[A-Z][a-z]+)?', re.I))
                 location = location_tag.strip() if location_tag else "No location"
 
                 # ID from URL
