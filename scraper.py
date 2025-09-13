@@ -109,7 +109,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                         await handle_cookie_consent(page)
 
                     # Wait for listing elements to load (adjust class name based on inspection)
-                    await page.wait_for_selector('div.item-card', state='visible', timeout=10000)  # Adjust class name if needed
+                    await page.wait_for_selector('div.item-row', state='visible', timeout=10000)  # Updated to 'item-row' as a common Blocket class
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await page.wait_for_timeout(random.randint(5000, 10000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
@@ -160,7 +160,7 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
         soup = BeautifulSoup(content, 'html.parser')
 
         # Target listing containers (adjust class names based on inspection of debug_content.html)
-        potential_listings = soup.find_all('div', class_=re.compile(r'item|listing|card', re.I))
+        potential_listings = soup.find_all('div', class_=re.compile(r'item-row|listing|card', re.I))  # Updated to include 'item-row'
 
         for item in potential_listings:
             try:
