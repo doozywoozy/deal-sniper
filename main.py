@@ -74,20 +74,20 @@ def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
             return search['name']
     return "Unknown Search"
 
-def evaluate_deal(listing: Dict, market_price: float) -> tuple:
+def evaluate_deal(listing: Dict, cost_price: float) -> tuple:
     """Evaluate if a listing is a good or hot deal and calculate profit for used computers."""
-    if not market_price or market_price <= 0:
-        logger.warning(f"No valid market price for {listing['title']}. Using 50% of price as fallback.")
-        market_price = listing['price'] * 0.5  # Fallback for used items below market
+    if not cost_price or cost_price <= 0:
+        logger.warning(f"No valid cost price for {listing['title']}. Using 50% of price as fallback.")
+        cost_price = listing['price'] * 0.5  # Fallback for used items
     
-    profit_sek = listing['price'] - market_price
-    profit_pct = (profit_sek / market_price) * 100 if market_price > 0 else 0
+    profit_sek = listing['price'] - cost_price
+    profit_pct = (profit_sek / cost_price) * 100 if cost_price > 0 else 0
     
     if profit_sek <= 0:
         return "Bad Deal", profit_sek, profit_pct
-    elif profit_pct >= 30:  # Adjusted for used market, lower threshold
+    elif profit_pct >= 30:  # Hot deal threshold for used items
         return "Hot Deal", profit_sek, profit_pct
-    elif profit_pct >= 10:  # Lowered for used items
+    elif profit_pct >= 10:  # Good deal threshold for used items
         return "Good Deal", profit_sek, profit_pct
     return "Bad Deal", profit_sek, profit_pct
 
@@ -95,11 +95,11 @@ async def main():
     """Main function to run the scraping and analysis process."""
     logger.info("🚀 Starting scraping process...")
     
-    # Example searches with approximate market prices for used computers
+    # Example searches with approximate cost prices for used computers
     searches = [
-        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000, "market_price": 6000},
-        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000, "market_price": 7000},
-        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000, "market_price": 3500}
+        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000, "cost_price": 4000},
+        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000, "cost_price": 5000},
+        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000, "cost_price": 2500}
     ]
     
     # Initialize database
@@ -124,11 +124,11 @@ async def main():
         for listing in all_new_listings:
             search_name = get_search_name_for_listing(listing, searches)
             search = next((s for s in searches if s['name'] == search_name), searches[0])
-            market_price = search.get('market_price', listing['price'] * 0.5)  # Use market price or fallback
-            deal_type, profit_sek, profit_pct = evaluate_deal(listing, market_price)
+            cost_price = search.get('cost_price', listing['price'] * 0.5)  # Use cost price or fallback
+            deal_type, profit_sek, profit_pct = evaluate_deal(listing, cost_price)
             
             # Log all listings for verification
-            logger.info(f"Listing: {listing['title']} | Price: {listing['price']} SEK | Market Price: {market_price} SEK | "
+            logger.info(f"Listing: {listing['title']} | Price: {listing['price']} SEK | Cost Price: {cost_price} SEK | "
                        f"Profit: {profit_sek:.2f} SEK ({profit_pct:.2f}%) | Deal: {deal_type}")
             
             # Only send Good or Hot deals to Discord
