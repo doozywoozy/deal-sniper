@@ -14,7 +14,6 @@ from config import (
     ENABLE_SCREENSHOTS,
     MAX_PAGES_TO_SCRAPE,
     REQUEST_DELAY,
-    SCRAPE_TIMEOUT,
 )
 from logger import log_detection, log_detection_sync, logger
 
@@ -23,11 +22,8 @@ async def handle_cookie_consent(page):
     """Robustly handle cookie consent: try click, then force remove via JS if needed."""
     try:
         logger.info("Handling cookie consent...")
-
-        # Wait for page stabilization
         await page.wait_for_timeout(5000)
 
-        # Try to click the button using robust selector
         try:
             accept_button = page.locator('button:has-text("Godkänn alla")')
             await accept_button.wait_for(state="visible", timeout=10000)
@@ -38,7 +34,6 @@ async def handle_cookie_consent(page):
         except Exception:
             logger.warning("Standard click failed. Trying JS injection.")
 
-        # Fallback: JS to find and click
         clicked = await page.evaluate('''() => {
             let clicked = false;
             document.querySelectorAll('button').forEach(button => {
@@ -55,7 +50,6 @@ async def handle_cookie_consent(page):
             await page.wait_for_timeout(3000)
             return
 
-        # Ultimate fallback: Remove popup element via JS
         removed = await page.evaluate('''() => {
             const popup = document.querySelector('[role="dialog"]') || document.querySelector('.cookie-consent') || document.querySelector('div[id*="cookie"]') || document.querySelector('div[class*="cookie"]');
             if (popup) {
@@ -75,7 +69,7 @@ async def handle_cookie_consent(page):
 
 
 async def scrape_blocket(search: Dict) -> List[Dict]:
-    """Scrape listings using BS4 on page content after handling popup."""
+    """Scrape listings using BS4 after simulating human interaction."""
     all_listings = []
     browser = None
     proxy = os.getenv('PROXY_URL')
@@ -99,7 +93,7 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
             page = await context.new_page()
             await stealth_async(page)
 
-            # No strict timeouts
+            # No timeouts
             page.set_default_timeout(0)
 
             logger.info(f"\n⚡ Scanning blocket for {search['name']} (proxy: {bool(proxy)})")
@@ -114,12 +108,12 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Additional wait after popup handling
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(random.randint(5000, 10000))  # Longer wait for content to settle
+                    # Simulate scrolling to load lazy content
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(random.randint(5000, 10000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Get page content and parse with BS4
+                    # Get page content
                     content = await page.content()
                     listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
@@ -128,14 +122,13 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                         logger.info("No results detected.")
                         break
                     if not listings and page_num == 1:
-                        logger.warning("No listings extracted. Capturing screenshot.")
+                        logger.warning("No listings extracted. Capturing screenshot and saving content.")
                         if ENABLE_SCREENSHOTS:
                             from datetime import datetime
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                             screenshot_path = os.path.join("screenshots", f"debug_{timestamp}.png")
                             await page.screenshot(path=screenshot_path, full_page=True)
                             logger.info(f"Screenshot: {screenshot_path}")
-                        # Save content for debug
                         with open('debug_content.html', 'w', encoding='utf-8') as f:
                             f.write(content)
                         logger.info("Saved page content to debug_content.html")
@@ -160,31 +153,33 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
 
 def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
-    """Extract listings using BeautifulSoup with broader selectors."""
+    """Extract listings using flexible BS4 selectors based on visible content."""
     listings = []
     try:
         soup = BeautifulSoup(content, 'html.parser')
 
-        # Broader selector: all article tags, or divs containing listings
-        article_elements = soup.find_all('article') or soup.find_all('div', class_=re.compile(r'listing|article|item', re.I))
+        # Target all divs or sections that might contain listings
+        potential_listings = soup.find_all(['div', 'section', 'article'], recursive=True)
 
-        for article in article_elements:
+        for item in potential_listings:
             try:
-                # Title: find h3 or similar heading
-                title_tag = article.find(['h3', 'h4', 'p', 'span'], string=re.compile(r'.{5,}', re.I))  # At least 5 chars
-                title = title_tag.get_text(strip=True) if title_tag else "No title"
+                # Title: any heading or text block with significant content
+                title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'p', 'span'], string=re.compile(r'.{10,}', re.I))  # At least 10 chars
+                if not title_tag:
+                    continue
+                title = title_tag.get_text(strip=True)
 
-                # URL: find a tag with href containing 'annons'
-                a_tag = article.find('a', href=re.compile(r'annons'))
-                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
+                # URL: any link with 'annons' in href
+                a_tag = item.find('a', href=re.compile(r'annons'))
+                url = f"https://www.blocket.se{a_tag['href']}" if a_tag and 'href' in a_tag.attrs else "No URL"
 
-                # Price: find span or p with 'kr'
-                price_tag = article.find(string=re.compile(r'\d+\s*kr'))
+                # Price: look for number followed by 'kr'
+                price_tag = item.find(string=re.compile(r'\d+\s*kr'))
                 price_text = price_tag.strip() if price_tag else "0"
                 price = int(re.sub(r"[^\d]", "", price_text))
 
-                # Location: find span or p with location-like text (cities, ' - ', etc.)
-                location_tag = article.find(string=re.compile(r'(Stockholm|Göteborg| Malmö| [A-Z][a-z]+)', re.I))
+                # Location: look for city names or location indicators
+                location_tag = item.find(string=re.compile(r'(Stockholm|Göteborg|Malmö|[A-Z][a-z]+ - [A-Z][a-z]+)', re.I))
                 location = location_tag.strip() if location_tag else "No location"
 
                 # ID from URL
