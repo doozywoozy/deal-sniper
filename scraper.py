@@ -108,12 +108,13 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Simulate scrolling to load lazy content
+                    # Wait for listing elements to load (adjust class name based on inspection)
+                    await page.wait_for_selector('div.item-card', state='visible', timeout=10000)  # Adjust class name if needed
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await page.wait_for_timeout(random.randint(5000, 10000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Get page content
+                    # Get page content after ensuring listings are loaded
                     content = await page.content()
                     listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
@@ -158,32 +159,35 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
     try:
         soup = BeautifulSoup(content, 'html.parser')
 
-        # Target all divs or sections that might contain listings
-        potential_listings = soup.find_all(['div', 'section', 'article'], recursive=True)
+        # Target listing containers (adjust class names based on inspection of debug_content.html)
+        potential_listings = soup.find_all('div', class_=re.compile(r'item|listing|card', re.I))
 
         for item in potential_listings:
             try:
-                # Title: any heading or text block with significant content
-                title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'p', 'span'], string=re.compile(r'.{10,}', re.I))  # At least 10 chars
+                # Title: Look for any text block or nested span/div with significant content
+                title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'p', 'span', 'div'], 
+                                    string=re.compile(r'.{5,}', re.I))  # Reduced to 5 chars for flexibility
+                if not title_tag:
+                    title_tag = item.find('a')  # Fallback to anchor text if no heading
                 if not title_tag:
                     continue
                 title = title_tag.get_text(strip=True)
 
-                # URL: any link with 'annons' in href
-                a_tag = item.find('a', href=re.compile(r'annons'))
-                url = f"https://www.blocket.se{a_tag['href']}" if a_tag and 'href' in a_tag.attrs else "No URL"
+                # URL: Look for any link within the item
+                a_tag = item.find('a', href=True)
+                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
 
-                # Price: look for number followed by 'kr'
-                price_tag = item.find(string=re.compile(r'\d+\s*kr'))
+                # Price: More flexible regex to handle spaces or different formats
+                price_tag = item.find(string=re.compile(r'\d[\d\s]*kr', re.I))
                 price_text = price_tag.strip() if price_tag else "0"
-                price = int(re.sub(r"[^\d]", "", price_text))
+                price = int(re.sub(r'[^\d]', '', price_text.replace(' ', '')))
 
-                # Location: look for city names or location indicators
-                location_tag = item.find(string=re.compile(r'(Stockholm|Göteborg|Malmö|[A-Z][a-z]+ - [A-Z][a-z]+)', re.I))
+                # Location: Broader regex for locations
+                location_tag = item.find(string=re.compile(r'[A-Z][a-z]+(?:\s*-\s*[A-Z][a-z]+)?', re.I))
                 location = location_tag.strip() if location_tag else "No location"
 
                 # ID from URL
-                listing_id_match = re.search(r"annons/(\d+)", url)
+                listing_id_match = re.search(r"ad/(\d+)", url)
                 listing_id = listing_id_match.group(1) if listing_id_match else None
 
                 if listing_id and not database.is_listing_seen(listing_id):
