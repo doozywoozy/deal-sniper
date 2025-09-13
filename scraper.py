@@ -114,10 +114,12 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    await page.wait_for_timeout(random.randint(3000, 6000))
+                    # Additional wait after popup handling
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(random.randint(5000, 10000))  # Longer wait for content to settle
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Get page content and parse with BS4 directly
+                    # Get page content and parse with BS4
                     content = await page.content()
                     listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
@@ -133,6 +135,10 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                             screenshot_path = os.path.join("screenshots", f"debug_{timestamp}.png")
                             await page.screenshot(path=screenshot_path, full_page=True)
                             logger.info(f"Screenshot: {screenshot_path}")
+                        # Save content for debug
+                        with open('debug_content.html', 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        logger.info("Saved page content to debug_content.html")
                         break
 
                 except Exception as e:
@@ -154,32 +160,32 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
 
 def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
-    """Extract listings using BeautifulSoup with robust selectors."""
+    """Extract listings using BeautifulSoup with broader selectors."""
     listings = []
     try:
         soup = BeautifulSoup(content, 'html.parser')
 
-        # Use broad selector for listing articles
-        article_elements = soup.select('article[class*="styled__StyledArticle"]') or soup.select('article')
+        # Broader selector: all article tags, or divs containing listings
+        article_elements = soup.find_all('article') or soup.find_all('div', class_=re.compile(r'listing|article|item', re.I))
 
         for article in article_elements:
             try:
-                # Title
-                title_tag = article.find('h3')
+                # Title: find h3 or similar heading
+                title_tag = article.find(['h3', 'h4', 'p', 'span'], string=re.compile(r'.{5,}', re.I))  # At least 5 chars
                 title = title_tag.get_text(strip=True) if title_tag else "No title"
 
-                # URL
-                a_tag = article.find('a')
-                url = f"https://www.blocket.se{a_tag['href']}" if a_tag and 'href' in a_tag.attrs else "No URL"
+                # URL: find a tag with href containing 'annons'
+                a_tag = article.find('a', href=re.compile(r'annons'))
+                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
 
-                # Price
-                price_span = article.find('span', string=re.compile(r'\d+\s*kr'))
-                price_text = price_span.get_text(strip=True) if price_span else "0"
+                # Price: find span or p with 'kr'
+                price_tag = article.find(string=re.compile(r'\d+\s*kr'))
+                price_text = price_tag.strip() if price_tag else "0"
                 price = int(re.sub(r"[^\d]", "", price_text))
 
-                # Location (look for span containing location info)
-                location_span = article.find('span', class_=re.compile(r'location|kommun', re.I))
-                location = location_span.get_text(strip=True).replace("Kommun", "").strip() if location_span else "No location"
+                # Location: find span or p with location-like text (cities, ' - ', etc.)
+                location_tag = article.find(string=re.compile(r'(Stockholm|Göteborg| Malmö| [A-Z][a-z]+)', re.I))
+                location = location_tag.strip() if location_tag else "No location"
 
                 # ID from URL
                 listing_id_match = re.search(r"annons/(\d+)", url)
