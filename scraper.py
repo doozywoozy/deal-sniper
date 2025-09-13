@@ -5,8 +5,9 @@ import re
 import random
 from typing import Dict, List
 
-from playwright.async_api import TimeoutError, async_playwright
-from playwright_stealth import stealth_async  # Ensure this is installed via requirements.txt
+from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async  # Ensure installed via requirements.txt
+from bs4 import BeautifulSoup
 
 import database
 from config import (
@@ -19,144 +20,139 @@ from logger import log_detection, log_detection_sync, logger
 
 
 async def handle_cookie_consent(page):
-    """Handle cookie consent popup by clicking 'Godkänn alla' or bypassing if not found."""
+    """Robustly handle cookie consent: try click, then force remove via JS if needed."""
     try:
-        logger.info("Looking for cookie consent dialog...")
+        logger.info("Handling cookie consent...")
 
-        # Increase timeout to detect popup title
-        popup_title_locator = page.locator('text=Cookieinställningar')
-        await popup_title_locator.wait_for(state="visible", timeout=30000)  # 30s timeout
+        # Wait for page stabilization
+        await page.wait_for_timeout(5000)
 
-        # If title is found, look for and click the accept button
-        accept_button = page.locator('button:has-text("Godkänn alla")')
-        await accept_button.wait_for(state="visible", timeout=60000)
-        await accept_button.click()
-        logger.info("✅ Successfully clicked 'Godkänn alla' button!")
-        await page.wait_for_timeout(2000)  # Wait for popup to disappear
+        # Try to click the button using robust selector
+        try:
+            accept_button = page.locator('button:has-text("Godkänn alla")')
+            await accept_button.wait_for(state="visible", timeout=10000)
+            await accept_button.click()
+            logger.info("✅ Clicked 'Godkänn alla' button!")
+            await page.wait_for_timeout(3000)
+            return
+        except Exception:
+            logger.warning("Standard click failed. Trying JS injection.")
 
-    except TimeoutError as te:
-        logger.warning(f"Cookie popup title or button not found after timeout: {te}. Checking for manual dismissal.")
-        # Try to detect popup container and force dismissal via JavaScript
-        popup_container = await page.query_selector('.cookie-consent, .consent-modal')
-        if popup_container:
-            await page.evaluate("document.querySelector('button:has-text(\"Godkänn alla\")').click()")
-            logger.info("Forced click on 'Godkänn alla' via JavaScript.")
-            await page.wait_for_timeout(2000)
+        # Fallback: JS to find and click
+        clicked = await page.evaluate('''() => {
+            let clicked = false;
+            document.querySelectorAll('button').forEach(button => {
+                if (button.innerText.trim() === 'Godkänn alla') {
+                    button.click();
+                    clicked = true;
+                }
+            });
+            return clicked;
+        }''')
+
+        if clicked:
+            logger.info("✅ JS clicked 'Godkänn alla'!")
+            await page.wait_for_timeout(3000)
+            return
+
+        # Ultimate fallback: Remove popup element via JS
+        removed = await page.evaluate('''() => {
+            const popup = document.querySelector('[role="dialog"]') || document.querySelector('.cookie-consent') || document.querySelector('div[id*="cookie"]') || document.querySelector('div[class*="cookie"]');
+            if (popup) {
+                popup.remove();
+                return true;
+            }
+            return false;
+        }''')
+
+        if removed:
+            logger.info("✅ Removed cookie popup via JS!")
         else:
-            logger.info("No cookie consent popup detected after checks.")
+            logger.warning("Could not find/remove popup. Proceeding anyway.")
+
     except Exception as e:
-        logger.warning(f"Could not handle cookie popup: {e}. Proceeding with potential overlay.")
+        logger.error(f"Cookie handling error: {e}. Continuing.")
 
 
 async def scrape_blocket(search: Dict) -> List[Dict]:
-    """Scrape listings from Blocket based on a search query."""
+    """Scrape listings with no strict timeouts and robust popup handling."""
     all_listings = []
     browser = None
+    proxy = os.getenv('PROXY_URL')
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            launch_args = {}
+            if proxy:
+                launch_args['proxy'] = {'server': proxy}
+            browser = await p.chromium.launch(headless=True, **launch_args)
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                user_agent=random.choice([
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                ]),
                 viewport={"width": 1920, "height": 1080},
-                screen={"width": 1920, "height": 1080},
                 ignore_https_errors=True,
                 bypass_csp=True,
-                locale="sv-SE",  # Swedish locale
+                locale="sv-SE",
             )
             page = await context.new_page()
-            await stealth_async(page)  # Apply stealth
+            await stealth_async(page)
 
-            # Set default timeout
-            page.set_default_timeout(SCRAPE_TIMEOUT)
+            # Remove strict timeouts: set to 0 (infinite)
+            page.set_default_timeout(0)
 
-            logger.info(f"\n⚡ Fast scanning blocket for {search['name']}")
+            logger.info(f"\n⚡ Scanning blocket for {search['name']} (proxy: {bool(proxy)})")
 
             for page_num in range(1, MAX_PAGES_TO_SCRAPE + 1):
                 search_url = f"https://www.blocket.se/annonser/hela_sverige?q={search['query']}&price_end={search['price_end']}&page={page_num}"
                 logger.info(f"📄 Page {page_num}: {search_url}")
 
                 try:
-                    # Navigate
-                    await page.goto(search_url, wait_until="domcontentloaded")
+                    await page.goto(search_url, wait_until="networkidle")
 
-                    # Handle cookie on first page
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Simulate human behavior: random wait and mouse move
-                    await page.wait_for_timeout(random.randint(2000, 5000))
+                    await page.wait_for_timeout(random.randint(3000, 6000))
                     await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
 
-                    # Wait for listings container with a retry mechanism
-                    for attempt in range(3):
-                        try:
-                            # Wait for popup to be gone or page to be interactive
-                            await page.wait_for_function("!document.querySelector('.cookie-consent, .consent-modal')", timeout=60000)
-                            await page.wait_for_selector('div[data-testid="result-list"]', timeout=60000)
-                            logger.info("Listings container found.")
-                            break
-                        except TimeoutError:
-                            logger.warning(f"Attempt {attempt + 1} failed to find listings container or popup still present. Retrying...")
-                            await page.reload()
-                            await handle_cookie_consent(page)
-                            if attempt == 2:
-                                # Fallback to a broader selector if primary fails
-                                await page.wait_for_selector('.styled__StyledArticle-sc-1l2koxx-0', timeout=60000)
-                                logger.info("Fell back to alternative listings selector.")
-                                break
-                            if attempt == 2:
-                                raise TimeoutError("Failed to find listings container after retries.")
+                    # Attempt to detect listings; no timeout
+                    await page.wait_for_selector('div[data-testid="result-list"]', timeout=30000)  # Soft timeout for logging
+                    logger.info("Listings container detected.")
 
-                    # Extract listings
                     listings = await extract_listings(page, search)
+                    if not listings:
+                        logger.warning("No listings from Playwright. Using BS4 fallback.")
+                        content = await page.content()
+                        listings = fallback_extract_listings(content, search)
                     all_listings.extend(listings)
 
-                    # Check for "no results"
                     page_text = await page.content()
-                    if (
-                        "inga resultat" in page_text.lower()
-                        or "inga annonser hittades" in page_text.lower()
-                    ):
-                        logger.info("Genuine no results page")
+                    if "inga resultat" in page_text.lower() or "inga annonser hittades" in page_text.lower():
+                        logger.info("No results detected.")
                         break
-                    else:
-                        if not listings and page_num == 1:
-                            logger.warning(
-                                "No listings found on the first page - taking debug screenshot"
-                            )
-                            if ENABLE_SCREENSHOTS:
-                                from datetime import datetime
+                    if not listings and page_num == 1:
+                        logger.warning("No listings. Capturing screenshot.")
+                        if ENABLE_SCREENSHOTS:
+                            from datetime import datetime
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            screenshot_path = os.path.join("screenshots", f"debug_{timestamp}.png")
+                            await page.screenshot(path=screenshot_path, full_page=True)
+                            logger.info(f"Screenshot: {screenshot_path}")
+                        break
 
-                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                screenshot_path = os.path.join(
-                                    "screenshots", f"no_listings_{timestamp}.png"
-                                )
-                                await page.screenshot(
-                                    path=screenshot_path, full_page=True
-                                )
-                                logger.info(
-                                    f"No listings screenshot saved: {screenshot_path}"
-                                )
-                                # Break if no listings on first page
-                                break
-
-                except TimeoutError as te:
-                    logger.error(f"Error on page {page_num}: Timeout {te}")
-                    await log_detection(page, f"Error: {str(te)}", search_url)
-                    break
                 except Exception as e:
-                    logger.error(f"Error on page {page_num}: {e}")
-                    await log_detection(page, f"Error: {str(e)}", search_url)
+                    logger.error(f"Page {page_num} error: {e}")
+                    await log_detection(page, str(e), search_url)
                     break
 
-                # Delay between pages
                 if page_num < MAX_PAGES_TO_SCRAPE:
                     await asyncio.sleep(REQUEST_DELAY)
 
     except Exception as e:
-        logger.error(f"Error during browser setup: {e}")
-        log_detection_sync(f"Browser error: {str(e)}", "N/A")
+        logger.error(f"Browser error: {e}")
+        log_detection_sync(str(e), "N/A")
     finally:
         if browser:
             await browser.close()
@@ -165,67 +161,64 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
 
 
 async def extract_listings(page, search: Dict) -> List[Dict]:
-    """Extract listing data from the current page."""
+    """Extract using Playwright."""
     listings = []
+    try:
+        elements = await page.locator('div[data-testid="result-list"] article').all() or await page.locator('.styled__StyledArticle-sc-1l2koxx-0').all()
 
-    # Use a broader locator for the list items
-    listing_elements = await page.locator('div[data-testid="result-list"] article').all()
+        for elem in elements:
+            try:
+                title = await elem.locator("h3").inner_text() or "No title"
+                url = f"https://www.blocket.se{await elem.locator('a').get_attribute('href')}" or "No URL"
+                price_text = await elem.locator('span:text-is("SEK")').inner_text() or "0"
+                price = int(re.sub(r"[^\d]", "", price_text))
+                location = (await elem.locator('span:has-text("Kommun")').inner_text() or "No location").replace("Kommun", "").strip()
 
-    if not listing_elements:
-        logger.warning("No listings found with data-testid selector. Trying a different one.")
-        listing_elements = await page.locator(
-            ".styled__StyledArticle-sc-1l2koxx-0"
-        ).all()
+                listing_id = re.search(r"annons/(\d+)", url).group(1) if re.search(r"annons/(\d+)", url) else None
 
-    for listing_element in listing_elements:
-        try:
-            # Extract basic info
-            title_element = listing_element.locator("h3").first
-            title = await title_element.inner_text() if title_element else "No title"
+                if listing_id and not database.is_listing_seen(listing_id):
+                    listing = {"id": listing_id, "title": title, "price": price, "url": url, "location": location, "source": "blocket", "query": search["name"]}
+                    listings.append(listing)
+                    database.mark_listing_seen(listing_id, title, price, url, "blocket")
 
-            url_element = listing_element.locator("a").first
-            url = (
-                f"https://www.blocket.se{await url_element.get_attribute('href')}"
-                if url_element
-                else "No URL"
-            )
+            except Exception as e:
+                logger.error(f"Extraction error: {e}")
 
-            price_element = listing_element.locator('span:text-is("SEK")').first
-            price_text = await price_element.inner_text() if price_element else "0"
-            price = int(re.sub(r"[^\d]", "", price_text))
+    except Exception as e:
+        logger.error(f"Playwright failed: {e}")
 
-            location_element = listing_element.locator('span:has-text("Kommun")').first
-            location = (
-                await location_element.inner_text() if location_element else "No location"
-            )
-            # Clean up the location text
-            location = location.replace("Kommun", "").strip()
+    return listings
 
-            # Create a unique ID for the listing
-            listing_id_match = re.search(r"annons/(\d+)", url)
-            listing_id = listing_id_match.group(1) if listing_id_match else None
 
-            if listing_id and not database.is_listing_seen(listing_id):
-                listing = {
-                    "id": listing_id,
-                    "title": title,
-                    "price": price,
-                    "url": url,
-                    "location": location,
-                    "source": "blocket",
-                    "query": search["name"],
-                }
-                listings.append(listing)
-                database.mark_listing_seen(
-                    listing["id"],
-                    listing["title"],
-                    listing["price"],
-                    listing["url"],
-                    listing["source"],
-                )
+def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
+    """BS4 fallback."""
+    listings = []
+    try:
+        soup = BeautifulSoup(content, 'html.parser')
+        articles = soup.select('div[data-testid="result-list"] article') or soup.select('.styled__StyledArticle-sc-1l2koxx-0')
 
-        except Exception as e:
-            logger.error(f"Error extracting listing data: {e}")
-            continue
+        for article in articles:
+            try:
+                title = article.find('h3').get_text(strip=True) if article.find('h3') else "No title"
+                a_tag = article.find('a')
+                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
+                price_span = article.find('span', string=re.compile(r'SEK'))
+                price_text = price_span.get_text() if price_span else "0"
+                price = int(re.sub(r"[^\d]", "", price_text))
+                location_span = article.find('span', string=re.compile(r'Kommun'))
+                location = location_span.get_text().replace("Kommun", "").strip() if location_span else "No location"
+
+                listing_id = re.search(r"annons/(\d+)", url).group(1) if re.search(r"annons/(\d+)", url) else None
+
+                if listing_id and not database.is_listing_seen(listing_id):
+                    listing = {"id": listing_id, "title": title, "price": price, "url": url, "location": location, "source": "blocket", "query": search["name"]}
+                    listings.append(listing)
+                    database.mark_listing_seen(listing_id, title, price, url, "blocket")
+
+            except Exception as e:
+                logger.error(f"Fallback error: {e}")
+
+    except Exception as e:
+        logger.error(f"Fallback failed: {e}")
 
     return listings
