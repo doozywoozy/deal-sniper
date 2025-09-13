@@ -112,15 +112,15 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
                     if page_num == 1:
                         await handle_cookie_consent(page)
 
-                    # Wait for listing elements to load with increased timeout and fallback
+                    # Wait for search results to load
                     try:
-                        await page.wait_for_selector('div.listing-item', state='visible', timeout=45000)  # Adjusted to 'listing-item' based on likely structure
+                        await page.wait_for_selector('div[data-cy="search-results"]', state='visible', timeout=45000)
                         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         await page.wait_for_timeout(random.randint(5000, 15000))
                         await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
                     except Exception as e:
                         logger.warning(f"Selector wait failed: {e}. Capturing content anyway.")
-                        await page.wait_for_timeout(10000)  # Increased to 10 seconds
+                        await page.wait_for_timeout(10000)
 
                     # Get page content and check for error messages
                     content = await page.content()
@@ -173,33 +173,27 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
         soup = BeautifulSoup(content, 'html.parser')
 
         # Target listing containers based on Blocket's structure
-        potential_listings = soup.find_all('div', class_=re.compile(r'listing-item|item|card', re.I))  # Adjusted to 'listing-item' as a likely class
+        potential_listings = soup.select('div.styled__Wrapper-sc-1kpvi4z-0.iQpUlz')
 
-        logger.debug(f"Found {len(potential_listings)} potential listing containers.")  # Debug log
+        logger.debug(f"Found {len(potential_listings)} potential listing containers.")
 
         for item in potential_listings:
             try:
-                # Title: Look for any text block or nested span/div with significant content
-                title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'p', 'span', 'div'], 
-                                    string=re.compile(r'.{5,}', re.I))
-                if not title_tag:
-                    title_tag = item.find('a')
-                if not title_tag:
+                # Title and URL
+                title_link = item.select_one('h2 a.Link-sc-6wulv7-0')
+                if not title_link:
                     continue
-                title = title_tag.get_text(strip=True)
+                title = title_link.select_one('span.styled__SubjectContainer-sc-1kpvi4z-9').get_text(strip=True)
+                url = f"https://www.blocket.se{title_link['href']}"
 
-                # URL: Look for any link within the item
-                a_tag = item.find('a', href=True)
-                url = f"https://www.blocket.se{a_tag['href']}" if a_tag else "No URL"
-
-                # Price: More flexible regex to handle spaces or different formats
-                price_tag = item.find(string=re.compile(r'\d[\d\s]*kr', re.I))
-                price_text = price_tag.strip() if price_tag else "0"
+                # Price
+                price_tag = item.select_one('div.Price__StyledPrice-sc-1v2maoc-1')
+                price_text = price_tag.get_text(strip=True) if price_tag else "0"
                 price = int(re.sub(r'[^\d]', '', price_text.replace(' ', '')))
 
-                # Location: Broader regex for locations
-                location_tag = item.find_parent(string=re.compile(r'[A-Z][a-z]+(?:\s*-\s*[A-Z][a-z]+)?', re.I))
-                location = location_tag.strip() if location_tag else "No location"
+                # Location
+                location_tag = item.select_one('p.styled__TopInfoWrapper-sc-1kpvi4z-22 a:nth-child(3)')
+                location = location_tag.get_text(strip=True) if location_tag else "No location"
 
                 # ID from URL
                 listing_id_match = re.search(r"ad/(\d+)", url)
