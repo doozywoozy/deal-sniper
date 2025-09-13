@@ -13,8 +13,8 @@ from config import DISCORD_WEBHOOK_URL, SCREENSHOT_DIR
 setup_logger()
 log_github_actions_info()
 
-async def send_discord_message(listing: Dict, search_name: str):
-    """Send a listing to Discord via webhook"""
+async def send_discord_message(listing: Dict, search_name: str, deal_type: str, profit_sek: float, profit_pct: float):
+    """Send a listing to Discord via webhook with deal type and profit info"""
     if not DISCORD_WEBHOOK_URL:
         logger.warning("No Discord webhook URL configured")
         return
@@ -23,11 +23,14 @@ async def send_discord_message(listing: Dict, search_name: str):
         embed = {
             "title": listing['title'][:256],
             "url": listing['url'],
-            "color": 65280 if listing['price'] < 5000 else 16753920,
+            "color": 65280 if deal_type == "Hot Deal" else 16776960 if deal_type == "Good Deal" else 16753920,
             "fields": [
                 {"name": "Price", "value": f"{listing['price']} SEK", "inline": True},
                 {"name": "Source", "value": listing['source'], "inline": True},
-                {"name": "Search", "value": search_name, "inline": False}
+                {"name": "Search", "value": search_name, "inline": False},
+                {"name": "Deal Type", "value": deal_type, "inline": True},
+                {"name": "Profit SEK", "value": f"{profit_sek:.2f} SEK", "inline": True},
+                {"name": "Profit %", "value": f"{profit_pct:.2f}%", "inline": True}
             ],
             "footer": {"text": "Deal Sniper Bot 🤖"}
         }
@@ -42,7 +45,16 @@ async def send_discord_message(listing: Dict, search_name: str):
         
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as response:
-                if response.status != 200:
+                if response.status == 429:
+                    retry_after = int(response.headers.get("Retry-After", 5))
+                    logger.warning(f"Rate limited (429). Waiting {retry_after} seconds...")
+                    await asyncio.sleep(retry_after)
+                    async with session.post(DISCORD_WEBHOOK_URL, json=payload) as retry_response:
+                        if retry_response.status != 200:
+                            logger.error(f"Failed to send message after retry: {retry_response.status}")
+                        else:
+                            logger.info("✅ Discord message sent after retry!")
+                elif response.status != 200:
                     logger.error(f"Failed to send message: {response.status}")
                 else:
                     logger.info("✅ Discord message sent!")
@@ -58,6 +70,18 @@ def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
         if listing['query'] == search['name']:
             return search['name']
     return "Unknown Search"
+
+def evaluate_deal(listing: Dict, cost_price: float) -> tuple:
+    """Evaluate if a listing is a good or hot deal and calculate profit."""
+    profit_sek = listing['price'] - cost_price
+    profit_pct = (profit_sek / cost_price) * 100 if cost_price > 0 else 0
+    if profit_sek <= 0:
+        return "Bad Deal", profit_sek, profit_pct
+    elif profit_pct >= 50:
+        return "Hot Deal", profit_sek, profit_pct
+    elif profit_pct >= 20:
+        return "Good Deal", profit_sek, profit_pct
+    return "Bad Deal", profit_sek, profit_pct
 
 async def main():
     """Main function to run the scraping and analysis process."""
@@ -92,11 +116,16 @@ async def main():
     if all_new_listings:
         logger.info(f"Found {len(all_new_listings)} new listings.")
         
-        # Send each listing to Discord
+        # Filter and evaluate deals (assuming cost_price is 70% of listing price as an example)
         for listing in all_new_listings:
             search_name = get_search_name_for_listing(listing, searches)
-            await send_discord_message(listing, search_name)
-            await asyncio.sleep(1)
+            cost_price = listing['price'] * 0.7  # Adjust this logic based on your cost model
+            deal_type, profit_sek, profit_pct = evaluate_deal(listing, cost_price)
+            
+            # Only send if it's a Good or Hot deal
+            if deal_type in ["Good Deal", "Hot Deal"]:
+                await send_discord_message(listing, search_name, deal_type, profit_sek, profit_pct)
+                await asyncio.sleep(2)  # Increased delay to avoid rate limiting
     else:
         logger.info("No new listings to analyze. Exiting.")
     
