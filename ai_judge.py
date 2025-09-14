@@ -17,7 +17,7 @@ async def analyze_listing(listing):
     CATEGORY: {listing['query']}
 
     [MARKET ANALYSIS REQUIREMENTS]
-    1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:38 PM CEST)
+    1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:47 PM CEST)
     2. Compare against recently sold prices for identical/similar items
     3. Consider the specific category context from {listing['query']}
     4. Account for market trends - prices are falling for older hardware
@@ -83,7 +83,7 @@ async def analyze_listing(listing):
                 # Clean response
                 response_text = response_text.strip()
                 if '```json' in response_text:
-                    response_text = response_text.split('```json
+                    response_text = response_text.split('```json')[1].split('```')[0].strip()
                 elif '```' in response_text:
                     response_text = response_text.split('```')[1].split('```')[0].strip()
                 
