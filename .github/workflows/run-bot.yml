@@ -43,7 +43,9 @@ jobs:
         ollama list
     
     - name: Start Ollama server
-      run: ollama serve &
+      run: |
+        ollama serve &
+        sleep 30  # Increased delay to ensure Ollama server is fully started
     
     - name: Create screenshots directory
       run: mkdir -p screenshots
@@ -51,7 +53,6 @@ jobs:
     - name: Run the bot
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        PROXY_LIST: ${{ secrets.PROXY_LIST }}
       run: |
         echo "🚀 Starting Deal Sniper Bot..."
         python main.py
@@ -70,7 +71,7 @@ jobs:
         name: bot-logs
         path: scraper.log
         if-no-files-found: ignore
-    
+
     - name: Upload debug HTML as artifact
       uses: actions/upload-artifact@v4
       with:
