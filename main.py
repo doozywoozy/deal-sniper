@@ -6,8 +6,7 @@ from typing import List, Dict
 from logger import logger, setup_logger, log_github_actions_info
 import scraper
 import database
-from config import DISCORD_WEBHOOK_URL, SCREENSHOT_DIR
-from ai_judge import analyze_listing  # AI module to evaluate listings
+from config import DISCORD_WEBHOOK_URL, SCREENSHOT_DIR, PRICE_THRESHOLDS, KEYWORDS
 
 # Setup logger
 setup_logger()
@@ -31,12 +30,13 @@ async def send_discord_message(listing: Dict, search_name: str, ai_verdict: Dict
             "color": 65280 if deal_type == "HOT DEAL" else 16776960 if deal_type == "GOOD DEAL" else 16753920,
             "fields": [
                 {"name": "Price", "value": f"{listing['price']} SEK", "inline": True},
-                {"name": "Source", "value": listing['source'], "inline": True},
+                {"name": "Source", "value": listing['site'], "inline": True},  # Changed from 'source' to 'site' to match your data
                 {"name": "Search", "value": search_name, "inline": False},
                 {"name": "Deal Type", "value": deal_type, "inline": True},
                 {"name": "Profit SEK", "value": f"{profit_sek:.2f} SEK", "inline": True},
                 {"name": "Profit %", "value": f"{profit_pct:.2f}%", "inline": True},
-                {"name": "AI Reasoning", "value": reason[:1024], "inline": False}
+                {"name": "AI Reasoning", "value": reason[:1024], "inline": False},
+                {"name": "Comparisons", "value": str(ai_verdict.get('comparison_count', 0)), "inline": True}
             ],
             "footer": {"text": "Deal Sniper Bot 🤖"}
         }
@@ -73,20 +73,20 @@ async def send_discord_message(listing: Dict, search_name: str, ai_verdict: Dict
 
 def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
     """Find the search name for a given listing based on its query."""
-    for search in searches:
-        if listing['query'] == search['name']:
-            return search['name']
+    for search_name, keywords in KEYWORDS.items():
+        if any(keyword in listing['title'].lower() or keyword in listing['query'].lower() for keyword in keywords):
+            return search_name.replace('_', ' ').title()
     return "Unknown Search"
 
 async def main():
     """Main function to run the scraping and analysis process."""
     logger.info("🚀 Starting Deal Sniper Bot...")
     
-    # Example searches (customize these as needed)
+    # Define searches based on config
     searches = [
-        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": 8000},
-        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": 10000},
-        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": 5000}
+        {"name": "Gaming PC RTX 3080", "query": "rtx 3080", "price_end": PRICE_THRESHOLDS["rtx_3080"]},
+        {"name": "All Stationary Computers", "query": "stationär dator", "price_end": PRICE_THRESHOLDS["stationary_computers"]},
+        {"name": "Workstation Xeon", "query": "xeon workstation", "price_end": PRICE_THRESHOLDS["xeon_workstation"]}
     ]
     
     # Initialize database
@@ -110,11 +110,12 @@ async def main():
         
         for listing in all_new_listings:
             try:
-                # AI analyzes each listing using web data, X posts, and component prices
+                # AI analyzes each listing using real-time data and component prices
                 ai_verdict = await analyze_listing(listing)
                 logger.info(f"AI Verdict for {listing['title']}: {ai_verdict['verdict']} | "
                            f"Profit SEK: {ai_verdict['estimated_profit']} | "
-                           f"Profit %: {ai_verdict['profit_percentage']} | Reason: {ai_verdict['reason']}")
+                           f"Profit %: {ai_verdict['profit_percentage']} | "
+                           f"Reason: {ai_verdict['reason']} | Comparisons: {ai_verdict['comparison_count']}")
                 
                 # Only send GOOD DEAL or HOT DEAL to Discord
                 if ai_verdict['verdict'] in ["GOOD DEAL", "HOT DEAL"]:
