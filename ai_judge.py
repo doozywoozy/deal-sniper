@@ -1,14 +1,15 @@
 # ai_judge.py
 import aiohttp
 import json
-from config import OLLAMA_MODEL, OLLAMA_BASE_URL
+from logger import logger
+from config import AI_MODEL, OLLAMA_BASE_URL
 
 async def analyze_listing(listing):
     """Analyzes listings for profit potential with market comparison - VERY strict."""
     prompt = f"""
     [ROLE]
     You are a professional PC flipper in Sweden. Your ONLY goal is to identify deals where you can make significant profit after all costs.
-    
+
     [LISTING DATA]
     TITLE: {listing['title']}
     PRICE: {listing['price']} SEK
@@ -16,9 +17,9 @@ async def analyze_listing(listing):
     CATEGORY: {listing['query']}
 
     [MARKET ANALYSIS REQUIREMENTS]
-    1. FIRST check current prices of similar items on Blocket RIGHT NOW
+    1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:15 PM CEST)
     2. Compare against recently sold prices for identical/similar items
-    3. Consider the specific category context
+    3. Consider the specific category context from {listing['query']}
     4. Account for market trends - prices are falling for older hardware
     5. Research component-level values for PCs (CPU, GPU, RAM, SSD separately)
 
@@ -45,13 +46,9 @@ async def analyze_listing(listing):
     7. Compare to at least 5 similar listings/sold items
 
     [COMPONENT VALUATION GUIDE - REFERENCE ONLY, VERIFY WITH CURRENT DATA]
-    - RTX 3080: Check current Blocket prices, typically 3000-5000kr for used
-    - Xeon CPUs: Verify current market, usually 2000-4000kr depending on gen
+    - RTX 3080: Check current Blocket, typically 3000-5000kr for used
+    - Xeon CPUs: Verify market, usually 2000-4000kr depending on gen
     - Adjust for condition, age, specs
-
-    [EXAMPLES]
-    - Used RTX 3080 listed 3500kr, current market 5000kr = GOOD DEAL (1300kr profit after costs)
-    - Old Xeon workstation listed 4500kr, market 4000kr = BAD DEAL (loss after costs)
 
     [RESPONSE FORMAT]
     Return ONLY JSON with this structure:
@@ -70,7 +67,7 @@ async def analyze_listing(listing):
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
-                "model": OLLAMA_MODEL,
+                "model": AI_MODEL,
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
@@ -88,7 +85,7 @@ async def analyze_listing(listing):
                 if '```json' in response_text:
                     response_text = response_text.split('```json
                 elif '```' in response_text:
-                    response_text = response_text.split('```')[1].split('```')[0]
+                    response_text = response_text.split('```')[1].split('```')[0].strip()
                 
                 # Parse JSON
                 decision = json.loads(response_text)
