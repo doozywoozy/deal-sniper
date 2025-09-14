@@ -7,6 +7,11 @@ from logger import logger, setup_logger, log_github_actions_info
 import scraper
 import database
 from config import DISCORD_WEBHOOK_URL, SCREENSHOT_DIR, PRICE_THRESHOLDS, KEYWORDS
+try:
+    from ai_judge import analyze_listing  # Explicitly import the function
+except ImportError as e:
+    logger.error(f"Failed to import analyze_listing from ai_judge: {e}")
+    raise
 
 # Setup logger
 setup_logger()
@@ -30,7 +35,7 @@ async def send_discord_message(listing: Dict, search_name: str, ai_verdict: Dict
             "color": 65280 if deal_type == "HOT DEAL" else 16776960 if deal_type == "GOOD DEAL" else 16753920,
             "fields": [
                 {"name": "Price", "value": f"{listing['price']} SEK", "inline": True},
-                {"name": "Source", "value": listing['site'], "inline": True},  # Changed from 'source' to 'site' to match your data
+                {"name": "Source", "value": listing.get('site', 'Unknown'), "inline": True},
                 {"name": "Search", "value": search_name, "inline": False},
                 {"name": "Deal Type", "value": deal_type, "inline": True},
                 {"name": "Profit SEK", "value": f"{profit_sek:.2f} SEK", "inline": True},
@@ -74,7 +79,7 @@ async def send_discord_message(listing: Dict, search_name: str, ai_verdict: Dict
 def get_search_name_for_listing(listing: Dict, searches: List[Dict]) -> str:
     """Find the search name for a given listing based on its query."""
     for search_name, keywords in KEYWORDS.items():
-        if any(keyword in listing['title'].lower() or keyword in listing['query'].lower() for keyword in keywords):
+        if any(keyword in listing['title'].lower() or keyword in listing.get('query', '').lower() for keyword in keywords):
             return search_name.replace('_', ' ').title()
     return "Unknown Search"
 
