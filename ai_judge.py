@@ -42,37 +42,29 @@ async def analyze_listing(listing):
     4. Be EXTREMELY conservative - assume you'll sell at lower end of market range
     5. Only recommend deals with clear, undeniable profit potential
     6. For category scans, be 2x more strict (most items are fairly priced)
+    7. Compare to at least 5 similar listings/sold items
 
-    [COMPONENT VALUATION GUIDE]
-    - RTX 3080: 4000-5500kr (depending on model and condition)
-    - RTX 3080 Ti: 4500-6000kr
-    - i7/i9 CPUs: 1500-3000kr (depending on generation)
-    - 16GB RAM: 400-600kr
-    - 1TB SSD: 400-600kr
-    - Complete gaming PC: Sum of components - 20% for being used
+    [COMPONENT VALUATION GUIDE - REFERENCE ONLY, VERIFY WITH CURRENT DATA]
+    - RTX 3080: Check current Blocket prices, typically 3000-5000kr for used
+    - Xeon CPUs: Verify current market, usually 2000-4000kr depending on gen
+    - Adjust for condition, age, specs
 
     [EXAMPLES]
-    - RTX 3080 bought for 4000kr, sells for 6000kr = 🔥 HOT DEAL (1500kr profit after costs)
-    - Gaming PC bought for 8000kr, sells for 10000kr = ✅ GOOD DEAL (1500kr profit after costs)
-    - RTX 3080 bought for 5500kr, sells for 6000kr = ❌ BAD DEAL (only 300kr profit after costs)
-
-    [CATEGORY-SPECIFIC RULES]
-    - For "All Stationary Computers" category: be EXTRA conservative (most are fairly priced)
-    - For specific searches: can be slightly more aggressive but still strict
-    - Always check multiple comparable listings before deciding
+    - Used RTX 3080 listed 3500kr, current market 5000kr = GOOD DEAL (1300kr profit after costs)
+    - Old Xeon workstation listed 4500kr, market 4000kr = BAD DEAL (loss after costs)
 
     [RESPONSE FORMAT]
     Return ONLY JSON with this structure:
     {{
-      "verdict": "HOT", "GOOD", "FAIR", or "BAD",
+      "verdict": "HOT DEAL", "GOOD DEAL", "FAIR DEAL", or "BAD DEAL",
       "reason": "Brief explanation of market comparison and profit potential",
-      "estimated_market_value": estimated selling price in SEK,
+      "estimated_market_value": estimated resale price in SEK,
       "estimated_profit": estimated profit in SEK after costs,
       "profit_percentage": estimated profit percentage,
       "comparison_count": number of similar listings considered
     }}
 
-    Be EXTREMELY conservative. Most deals are NOT profitable. When in doubt, say BAD.
+    Be EXTREMELY conservative. Most deals are NOT profitable. When in doubt, say BAD DEAL.
     """
 
     try:
@@ -83,25 +75,25 @@ async def analyze_listing(listing):
                 "stream": False,
                 "format": "json",
                 "options": {
-                    "temperature": 0.1,  # More deterministic, less creative
+                    "temperature": 0.1,  # More deterministic
                     "top_p": 0.9
                 }
             }
             async with session.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload) as resp:
                 result = await resp.json()
-                response_text = result.get('response', '{"verdict": "BAD", "reason": "AI failed to respond", "estimated_market_value": 0, "estimated_profit": 0, "profit_percentage": 0, "comparison_count": 0}')
+                response_text = result.get('response', '{"verdict": "BAD DEAL", "reason": "AI failed to respond", "estimated_market_value": 0, "estimated_profit": 0, "profit_percentage": 0, "comparison_count": 0}')
                 
-                # Clean the response
+                # Clean response
                 response_text = response_text.strip()
                 if '```json' in response_text:
-                    response_text = response_text.split('```json')[1].split('```')[0]
+                    response_text = response_text.split('```json
                 elif '```' in response_text:
                     response_text = response_text.split('```')[1].split('```')[0]
                 
-                # Parse JSON response
+                # Parse JSON
                 decision = json.loads(response_text)
                 
-                # Validate the response has required fields
+                # Validate fields
                 required_fields = ["verdict", "reason", "estimated_market_value", "estimated_profit", "profit_percentage", "comparison_count"]
                 for field in required_fields:
                     if field not in decision:
@@ -110,9 +102,9 @@ async def analyze_listing(listing):
                 return decision
                 
     except json.JSONDecodeError as e:
-        print(f"AI JSON decode error: {e}")
+        logger.error(f"AI JSON decode error: {e}")
         return {
-            "verdict": "BAD", 
+            "verdict": "BAD DEAL", 
             "reason": "AI returned invalid JSON format", 
             "estimated_market_value": 0, 
             "estimated_profit": 0, 
@@ -120,9 +112,9 @@ async def analyze_listing(listing):
             "comparison_count": 0
         }
     except Exception as e:
-        print(f"AI analysis error: {e}")
+        logger.error(f"AI analysis error: {e}")
         return {
-            "verdict": "BAD", 
+            "verdict": "BAD DEAL", 
             "reason": "Error during analysis", 
             "estimated_market_value": 0, 
             "estimated_profit": 0, 
