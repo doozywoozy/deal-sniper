@@ -17,7 +17,7 @@ async def analyze_listing(listing):
     CATEGORY: {listing['query']}
 
     [MARKET ANALYSIS REQUIREMENTS]
-    1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:15 PM CEST)
+    1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:32 PM CEST)
     2. Compare against recently sold prices for identical/similar items
     3. Consider the specific category context from {listing['query']}
     4. Account for market trends - prices are falling for older hardware
