@@ -42,6 +42,10 @@ jobs:
         ollama pull mistral:7b
         ollama list
     
+    - name: Kill existing Ollama process if running
+      run: |
+        pkill -f ollama || true  # Kill if running, ignore if not
+    
     - name: Start Ollama server
       run: |
         ollama serve &
