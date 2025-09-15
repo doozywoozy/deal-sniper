@@ -6,20 +6,26 @@ from config import AI_MODEL, OLLAMA_BASE_URL
 
 async def analyze_listing(listing):
     """Analyzes listings for profit potential with market comparison - VERY strict."""
+    # Use get() with fallbacks for all fields to prevent KeyError
+    title = listing.get('title', 'Unknown Title')
+    price = listing.get('price', 0)
+    site = listing.get('site', listing.get('source', 'unknown'))
+    query = listing.get('query', 'unknown category')
+    
     prompt = f"""
     [ROLE]
     You are a professional PC flipper in Sweden. Your ONLY goal is to identify deals where you can make significant profit after all costs.
 
     [LISTING DATA]
-    TITLE: {listing['title']}
-    PRICE: {listing['price']} SEK
-    SITE: {listing['site']}
-    CATEGORY: {listing['query']}
+    TITLE: {title}
+    PRICE: {price} SEK
+    SITE: {site}
+    CATEGORY: {query}
 
     [MARKET ANALYSIS REQUIREMENTS]
     1. Check current prices of similar items on Blocket RIGHT NOW (as of September 14, 2025, 12:47 PM CEST)
     2. Compare against recently sold prices for identical/similar items
-    3. Consider the specific category context from {listing['query']}
+    3. Consider the specific category context from {query}
     4. Account for market trends - prices are falling for older hardware
     5. Research component-level values for PCs (CPU, GPU, RAM, SSD separately)
 
