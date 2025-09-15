@@ -3,10 +3,10 @@ import asyncio
 import os
 import re
 import random
-from typing import Dict, List  # Ensure this import is present
+from typing import Dict, List
 
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async  # Ensure installed via requirements.txt
+from playwright_stealth import stealth_async
 from bs4 import BeautifulSoup
 
 import database
@@ -72,15 +72,14 @@ async def scrape_blocket(search: Dict) -> List[Dict]:
     """Scrape listings using BS4 after simulating human interaction."""
     all_listings = []
     browser = None
-    proxy_list = os.getenv('PROXY_LIST', '').split(',') if os.getenv('PROXY_LIST') else []
+    proxy_list = [p.strip() for p in os.getenv('PROXY_LIST', '').split(',') if p.strip()]
 
     try:
         async with async_playwright() as p:
             launch_args = {}
             if proxy_list:
-                proxy = random.choice(proxy_list) if proxy_list else None
-                if proxy:
-                    launch_args['proxy'] = {'server': proxy}
+                proxy = random.choice(proxy_list)
+                launch_args['proxy'] = {'server': proxy}
             browser = await p.chromium.launch(headless=True, **launch_args)
             context = await browser.new_context(
                 user_agent=random.choice([
@@ -214,6 +213,7 @@ def fallback_extract_listings(content: str, search: Dict) -> List[Dict]:
                         "url": url,
                         "location": location,
                         "source": "blocket",
+                        "site": "blocket",
                         "query": search["name"],
                     }
                     listings.append(listing)
